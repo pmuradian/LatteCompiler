@@ -2,6 +2,7 @@
 module CompilerBackend where
 import AbsLatte
 import ErrM
+import Data.String.Utils
 
 -- change Success to Error later --
 failure :: Show a => a -> Result
@@ -22,11 +23,14 @@ concatArguments [] = ""
 
 compileProgram :: Program -> String
 compileProgram p = case p of
-  Program topdefs -> concatArray $ map (\x -> line x) (map transTopDef topdefs)
+  Program topdefs -> concatArray $ map line (map transTopDef topdefs)
 
 checkDuplicate :: String -> [String] -> Bool
 checkDuplicate x [] = False
 checkDuplicate x (head: tail) = (x == head) || checkDuplicate x tail
+
+-- getType :: [Variable] -> String -> String
+-- getType v arg = 
 
 checkDuplicateExist :: [String] -> [String] -> Bool
 checkDuplicateExist [] _ = False
@@ -60,9 +64,9 @@ transTopDef x = case x of
     let identity = transIdent ident
     let ftype = transType type_
 
-    let arguments = map (\x -> Variable ((argType . context) x) ((argName . context) x)) translatedArgs
-    let blockContext = BlockContext arguments
-    let b = transBlock block arguments
+    let usedVariables = map (\x -> Variable ((argType . context) x) ((argName . context) x)) translatedArgs
+    let blockContext = BlockContext usedVariables
+    let b = transBlock block usedVariables
     -- get function declaration in LLVM
     let result = createFunctionDefinition (line ftype) (line identity) argumentsLine (line b)
     Success result None
@@ -77,53 +81,68 @@ transArg x = case x of
 transBlock :: Block -> [Variable] -> Result
 transBlock x v = case x of
   Block stmts -> do
-    let statements = map transStmt stmts
+    let arbabik = show v
+    let st = translateStatements stmts v
+    let statements = fst st
     let names = map (argName . context) statements
     let hasDuplicateNames = checkDuplicateExist names names
     -- if hasDuplicateNames then failure "Duplicate name found" None else
     let a = concatWithSeparator (map line statements) "\n"
-    Success ("{\n" ++ a ++ "}\n") None
+    Success ("{\n" ++ a ++ "}\n" ++ (show . snd) st) None
 
-translateStatements :: [Stmt] -> Result
-translateStatements (x:xs) = do
-  let result = transStmt x
-  translateStatements xs
-translateStatements [] = Success "" None
-transStmt :: Stmt -> Result
-transStmt x = case x of
-  Empty -> Success "" None
+translateStatements :: [Stmt] -> [Variable] -> ([Result], [Variable])
+translateStatements (x:xs) v = do
+  let result = transStmt x v
+  let updatedVars = (vars . context) result
+  let res = translateStatements xs updatedVars
+  let f = fst res
+  let s = snd res
+  ([result] ++ f, s ++ updatedVars)
+translateStatements [] v = ([Success "" (StmtContext [])], [])
+transStmt :: Stmt -> [Variable] -> Result
+transStmt x v = case x of
+  Empty -> Success "empty" None
   BStmt block -> transBlock block []
   Decl type_ items -> do
-     let tp = transType type_
-     let ids = map (\x -> line x ++ line tp) (map transItem items)
+     let tp = line $ transType type_
+     let translatedItems = map transItem items
+     let ids = map (\x -> replace "_tp_" tp (line x)) translatedItems
      let result = concatArguments ids
-     Success result None
+     let newVars = map (\x -> Variable tp (expVar (context x))) translatedItems
+     Success result (StmtContext (v ++ newVars))
   Ass ident expr -> do
     let e = transExpr expr
     let e_ctx = context e
     let i = transIdent ident
     let i_ctx = context i
-    let result = "store " ++ expType e_ctx ++ " " ++ expVar e_ctx ++ ", " ++ expType i_ctx ++ " %" ++ line i
-    Success result None
+    let varName = expVar i_ctx
+    let filtered = map varType (filter (\x -> name x == varName) v)
+    let result = "store " ++ expType e_ctx ++ " " ++ expVar e_ctx ++ ", " ++ last filtered ++ " %" ++ line i
+    Success result (StmtContext [])
   Incr ident -> Success "i++\n" None
   Decr ident -> Success "i--\n" None
-  Ret expr -> Success ("ret " ++ line (transExpr expr)) None
+  Ret expr -> do 
+    let expression = transExpr expr
+    Success ("ret " ++ line expression) (StmtContext [])
   VRet -> Success "ret void" None
   Cond expr stmt -> Success "if something {}\n" None
   CondElse expr stmt1 stmt2 -> Success "else {}\n" None
   While expr stmt -> Success "while something {}\n" None
   SExp expr -> Success (line $ transExpr expr) None
+
 transItem :: Item -> Result
 transItem x = case x of
-  NoInit ident -> Success ("%" ++ line (transIdent ident) ++ " = alloca ") None
+  NoInit ident -> do 
+    let id = transIdent ident
+    Success ("%" ++ line id ++ " = alloca _tp_") (context id)
   Init ident expr -> do 
     let res = transExpr expr
     let id = transIdent ident
     let exp = line res
     let ctx = context res
-    let def = line id ++ " = alloca "
-    let init = "store " ++ expType ctx ++ ", " ++ expVar ctx ++ " " ++ line id
-    Success (exp ++ line id ++ " = alloca \n" ++ init) None
+    let def = "%" ++ line id ++ " = alloca " ++ expType ctx
+    let init = "store " ++ expType ctx ++ " " ++ expVar ctx ++ ", _tp_ %" ++ line id
+    Success (def ++ "\n" ++ init) (ExpContext (expType ctx)  (expVar ctx))
 transType :: Type -> Result
 transType x = case x of
   Int -> Success "i32" None

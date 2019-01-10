@@ -13,6 +13,7 @@ data Context
     | FuncContext {retType :: String, arguments :: [String]}
     | ArgContext {argType :: String, argName :: String}
     | BlockContext {vars :: [Variable]}
+    | StmtContext {vars :: [Variable]}
     | ExpContext {expType :: String, expVar :: String}
   deriving (Eq, Ord, Show, Read)
 data Result 
