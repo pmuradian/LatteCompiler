@@ -14,7 +14,7 @@ data Context
     | ArgContext {argType :: String, argName :: String}
     | BlockContext {vars :: [Variable]}
     | StmtContext {vars :: [Variable]}
-    | ExpContext {expType :: String, expVar :: String}
+    | ExpContext {expType :: String, expVar :: String, usedVars :: [Variable]}
   deriving (Eq, Ord, Show, Read)
 data Result 
     = Success {line :: String, context :: Context}

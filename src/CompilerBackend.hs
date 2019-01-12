@@ -29,8 +29,10 @@ checkDuplicate :: String -> [String] -> Bool
 checkDuplicate x [] = False
 checkDuplicate x (head: tail) = (x == head) || checkDuplicate x tail
 
--- getType :: [Variable] -> String -> String
--- getType v arg = 
+getType :: [Variable] -> String -> String
+getType v arg = case v of
+  (x:xs) -> varType $ last (filter (\x -> (name x) == arg) v)
+  [] -> "no_type"
 
 checkDuplicateExist :: [String] -> [String] -> Bool
 checkDuplicateExist [] _ = False
@@ -45,7 +47,7 @@ transProgram x = case x of
 
 transIdent :: Ident -> Result
 transIdent x = case x of
-  Ident string -> Success string (ExpContext string string)
+  Ident string -> Success string (ExpContext string string [])
 
 transTopDef :: TopDef -> Result
 transTopDef x = case x of
@@ -96,9 +98,8 @@ translateStatements (x:xs) v = do
   let updatedVars = (vars . context) result
   let res = translateStatements xs updatedVars
   let f = fst res
-  let s = snd res
-  ([result] ++ f, s ++ updatedVars)
-translateStatements [] v = ([Success "" (StmtContext [])], [])
+  (result : f, snd res)
+translateStatements [] v = ([Success "" (StmtContext v)], v)
 transStmt :: Stmt -> [Variable] -> Result
 transStmt x v = case x of
   Empty -> Success "empty" None
@@ -111,24 +112,25 @@ transStmt x v = case x of
      let newVars = map (\x -> Variable tp (expVar (context x))) translatedItems
      Success result (StmtContext (v ++ newVars))
   Ass ident expr -> do
-    let e = transExpr expr
+    let e = transExpr expr v
     let e_ctx = context e
     let i = transIdent ident
     let i_ctx = context i
     let varName = expVar i_ctx
     let filtered = map varType (filter (\x -> name x == varName) v)
-    let result = "store " ++ expType e_ctx ++ " " ++ expVar e_ctx ++ ", " ++ last filtered ++ " %" ++ line i
-    Success result (StmtContext [])
+    let result = line e ++ "\nstore " ++ expType e_ctx ++ " " ++ expVar e_ctx ++ ", " ++ last filtered ++ "* %" ++ line i
+    let newVars = usedVars e_ctx
+    Success result (StmtContext newVars)
   Incr ident -> Success "i++\n" None
   Decr ident -> Success "i--\n" None
   Ret expr -> do 
-    let expression = transExpr expr
-    Success ("ret " ++ line expression) (StmtContext [])
+    let expression = transExpr expr v
+    Success ("ret " ++ line expression) (StmtContext v)
   VRet -> Success "ret void" None
   Cond expr stmt -> Success "if something {}\n" None
   CondElse expr stmt1 stmt2 -> Success "else {}\n" None
   While expr stmt -> Success "while something {}\n" None
-  SExp expr -> Success (line $ transExpr expr) None
+  SExp expr -> Success (line $ transExpr expr v) None
 
 transItem :: Item -> Result
 transItem x = case x of
@@ -136,13 +138,13 @@ transItem x = case x of
     let id = transIdent ident
     Success ("%" ++ line id ++ " = alloca _tp_") (context id)
   Init ident expr -> do 
-    let res = transExpr expr
+    let res = transExpr expr []
     let id = transIdent ident
     let exp = line res
     let ctx = context res
     let def = "%" ++ line id ++ " = alloca " ++ expType ctx
-    let init = "store " ++ expType ctx ++ " " ++ expVar ctx ++ ", _tp_ %" ++ line id
-    Success (def ++ "\n" ++ init) (ExpContext (expType ctx)  (expVar ctx))
+    let init = "store " ++ expType ctx ++ " " ++ expVar ctx ++ ", _tp_* %" ++ line id
+    Success (def ++ "\n" ++ init) (ExpContext (expType ctx)  (line id) [])
 transType :: Type -> Result
 transType x = case x of
   Int -> Success "i32" None
@@ -150,31 +152,49 @@ transType x = case x of
   Bool -> Success "i1" None
   Void -> Success "void" None
   Fun type_ types -> Success "Fun type" None
-transExpr :: Expr -> Result
-transExpr x = case x of
-  EVar ident -> transIdent ident
-  ELitInt integer -> Success (show integer) (ExpContext "i32" (show integer))
-  ELitTrue -> Success "1" None
-  ELitFalse -> Success "0" None
+transExpr :: Expr -> [Variable] -> Result
+transExpr x v = case x of
+  EVar ident -> do
+    let id = transIdent ident
+    let name = line id
+    let tp = getType v name
+    let var = "%" ++ show (length v)
+    let vars = v ++ [Variable tp name]
+    Success (var ++ " = load " ++ tp ++ "* %" ++ line id) (ExpContext tp var vars)
+  ELitInt integer -> Success "" (ExpContext "i32" (show integer) v)
+  ELitTrue -> Success "1" (ExpContext "i1" "1" v)
+  ELitFalse -> Success "0" (ExpContext "i1" "0" v)
   EApp ident exprs -> failure x
   EString string -> failure x
   Neg expr -> failure x
   Not expr -> failure x
   EMul expr1 mulop expr2 -> do
-    let l = transExpr expr1
+    let l = transExpr expr1 v
+    let lExpVar = expVar (context l)
     let o = transMulOp mulop
-    let r = transExpr expr2
-    let ctx = ExpContext (expType (context l)) "%0"
-    if expType (context l) == expType (context r) then 
-      Success (line r ++ line o ++ line l) ctx
+    let newV = usedVars (context l)
+    let r = transExpr expr2 newV
+    let vars = usedVars (context r)
+    if expType (context l) == expType (context r) then do
+      let var = "%" ++ show (length vars)
+      let newVar = Variable (expType (context l)) var
+      let ctx = ExpContext (expType (context l)) var (vars ++ [newVar])
+      let res = var ++ " = " ++ line o ++ " " ++ expType (context l) ++ " " ++ expVar (context l) ++ ", " ++ expVar (context r)
+      Success (line r ++ "\n" ++ line l ++ "\n" ++ res) ctx
     else failure "type mismatch"
   EAdd expr1 addop expr2 -> do
-    let l = transExpr expr1
+    let l = transExpr expr1 v
+    let lExpVar = expVar (context l)
     let o = transAddOp addop
-    let r = transExpr expr2
-    let ctx = ExpContext (expType (context l)) "%1"
-    if expType (context l) == expType (context r) then 
-      Success (line r ++ line o ++ line l) ctx
+    let newV = usedVars (context l)
+    let r = transExpr expr2 newV
+    let vars = usedVars (context r)
+    if expType (context l) == expType (context r) then do
+      let var = "%" ++ show (length vars)
+      let newVar = Variable (expType (context l)) var
+      let ctx = ExpContext (expType (context l)) var (vars ++ [newVar])
+      let res = var ++ " = " ++ line o ++ " " ++ expType (context l) ++ " " ++ expVar (context l) ++ ", " ++ expVar (context r)
+      Success (line r ++ "\n" ++ line l ++ "\n" ++ res) ctx
     else failure "type mismatch"
   ERel expr1 relop expr2 -> failure x
   EAnd expr1 expr2 -> failure x
