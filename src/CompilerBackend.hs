@@ -102,7 +102,7 @@ translateStatements (x:xs) v = do
 translateStatements [] v = ([Success "" (StmtContext v)], v)
 transStmt :: Stmt -> [Variable] -> Result
 transStmt x v = case x of
-  Empty -> Success "empty" None
+  Empty -> Success "" (StmtContext v)
   BStmt block -> transBlock block []
   Decl type_ items -> do
      let tp = line $ transType type_
@@ -121,16 +121,36 @@ transStmt x v = case x of
     let result = line e ++ "\nstore " ++ expType e_ctx ++ " " ++ expVar e_ctx ++ ", " ++ last filtered ++ "* %" ++ line i
     let newVars = usedVars e_ctx
     Success result (StmtContext newVars)
-  Incr ident -> Success "i++\n" None
-  Decr ident -> Success "i--\n" None
+  Incr ident -> do 
+    let id = transIdent ident
+    let tp = getType v (line id)
+    let var = "%" ++ (show . length) v
+    let newVars = v ++ [Variable "i32" var]
+    let load = var ++ " = load i32* " ++ line id ++ "\n"
+    let incVar = "%" ++ (show . length) newVars
+    let increment = incVar ++ " = add i32 " ++ var ++ ", 1\n"
+    let res = "store i32 " ++ incVar ++ ", i32* %" ++ line id
+    let retVars = newVars ++ [Variable "i32" incVar]
+    Success (load ++ increment ++ res) (StmtContext retVars)
+  Decr ident -> do
+    let id = transIdent ident
+    let tp = getType v (line id)
+    let var = "%" ++ (show . length) v
+    let newVars = v ++ [Variable "i32" var]
+    let load = var ++ " = load i32* " ++ line id ++ "\n"
+    let incVar = "%" ++ (show . length) newVars
+    let increment = incVar ++ " = sub i32 " ++ var ++ ", 1\n"
+    let res = "store i32 " ++ incVar ++ ", i32* %" ++ line id
+    let retVars = newVars ++ [Variable "i32" incVar]
+    Success (load ++ increment ++ res) (StmtContext retVars)
   Ret expr -> do 
     let expression = transExpr expr v
-    Success ("ret " ++ line expression) (StmtContext v)
-  VRet -> Success "ret void" None
-  Cond expr stmt -> Success "if something {}\n" None
-  CondElse expr stmt1 stmt2 -> Success "else {}\n" None
-  While expr stmt -> Success "while something {}\n" None
-  SExp expr -> Success (line $ transExpr expr v) None
+    Success (line expression ++ "\nret " ++ (expType . context) expression ++ " " ++ (expVar . context) expression) (StmtContext v)
+  VRet -> Success "ret void" (StmtContext v)
+  Cond expr stmt -> Success "if something {}\n" (StmtContext v)
+  CondElse expr stmt1 stmt2 -> Success "else {}\n" (StmtContext v)
+  While expr stmt -> Success "while something {}\n" (StmtContext v)
+  SExp expr -> Success (line $ transExpr expr v) (StmtContext v)
 
 transItem :: Item -> Result
 transItem x = case x of
