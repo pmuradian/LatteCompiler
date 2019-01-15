@@ -90,7 +90,8 @@ transBlock x v = case x of
     let hasDuplicateNames = checkDuplicateExist names names
     -- if hasDuplicateNames then failure "Duplicate name found" None else
     let a = concatWithSeparator (map line statements) "\n"
-    Success ("{\n" ++ a ++ "}\n" ++ (show . snd) st) None
+    -- Success ("\n{\n" ++ a ++ "\n}\n" ++ (show . snd) st) (BlockContext (snd st))
+    Success ("\n" ++ a ++ "\n") (BlockContext (snd st))
 
 translateStatements :: [Stmt] -> [Variable] -> ([Result], [Variable])
 translateStatements (x:xs) v = do
@@ -103,7 +104,7 @@ translateStatements [] v = ([Success "" (StmtContext v)], v)
 transStmt :: Stmt -> [Variable] -> Result
 transStmt x v = case x of
   Empty -> Success "" (StmtContext v)
-  BStmt block -> transBlock block []
+  BStmt block -> transBlock block v
   Decl type_ items -> do
      let tp = line $ transType type_
      let translatedItems = map transItem items
@@ -147,9 +148,46 @@ transStmt x v = case x of
     let expression = transExpr expr v
     Success (line expression ++ "\nret " ++ (expType . context) expression ++ " " ++ (expVar . context) expression) (StmtContext v)
   VRet -> Success "ret void" (StmtContext v)
-  Cond expr stmt -> Success "if something {}\n" (StmtContext v)
-  CondElse expr stmt1 stmt2 -> Success "else {}\n" (StmtContext v)
-  While expr stmt -> Success "while something {}\n" (StmtContext v)
+  Cond expr stmt -> do
+    let expression = transExpr expr v
+    let newVars = (usedVars . context) expression
+    let breakVar = "%" ++ show (length newVars)
+    let statement = transStmt stmt (newVars ++ [Variable "label" breakVar])
+    let retVars = vars (context statement)
+    let breakVar2 = "%" ++ show (length retVars)
+    let break = "\nbr i1 " ++ ((expVar . context) expression) ++ ", label " ++ breakVar ++ ", label " ++ breakVar2 ++ "\n;<label>:" ++ breakVar
+    Success (line expression ++ break ++ line statement ++ "\n;<label> " ++ breakVar2) (StmtContext (retVars ++ [Variable "label" breakVar2]))
+  CondElse expr stmt1 stmt2 -> do
+    let expression = transExpr expr v
+    let newVars = (usedVars . context) expression
+    let breakVar = "%" ++ show (length newVars)
+    let statement1 = transStmt stmt1 (newVars ++ [Variable "label" breakVar])
+    let stmt1Vars = vars (context statement1)
+    let statement2 = transStmt stmt2 stmt1Vars
+    let retVars = vars (context statement2)
+    let breakVar2 = "%" ++ show (length stmt1Vars)
+    let break = "\nbr i1 " ++ ((expVar . context) expression) ++ ", label " ++ breakVar ++ ", label " ++ breakVar2 ++ "\n;<label>:" ++ breakVar
+    let stmt1Line = line statement1
+    let stmt2Line = line statement2
+    let finalBreak = "br label " ++ show (length retVars)
+    Success (line expression ++ break ++ stmt1Line ++ finalBreak ++ "\n;<label> " ++ breakVar2 ++ "\n" ++ stmt2Line ++ finalBreak ++ "\n;<label>:" ++ show (length retVars)) 
+      (StmtContext (retVars ++ [(Variable "label" breakVar2), (Variable "label" (show (length retVars)))]))
+  While expr stmt -> do
+    let expression = transExpr expr v
+    let expVars = usedVars (context expression)
+    let statement = transStmt stmt expVars
+    let stmtVars = vars (context statement)
+
+    let whileLabelVar = "%" ++ show (length v)
+    let whileLabel = ";<label>:" ++ show (length v) ++ "\n"
+    let stmtLabelVar = "%" ++ show (length expVars)
+    let stmtLabel = ";<label>:" ++ show (length expVars) ++ "\n"
+    let continuationVar = "%" ++ show (length stmtVars)
+    let continuationLabel = ";<label>:" ++ show (length stmtVars) ++ "\n"
+    let endStmtBreak = "br label " ++ whileLabelVar ++ "\n"
+    let breakLine = "br i1 " ++ expVar (context expression) ++ ", label " ++ stmtLabelVar ++ ", label " ++ continuationVar ++ "\n"
+    let returnLine = whileLabel ++ line expression ++ "\n" ++ breakLine ++ stmtLabel ++ line statement ++ endStmtBreak ++ continuationLabel
+    Success returnLine (StmtContext stmtVars)
   SExp expr -> Success (line $ transExpr expr v) (StmtContext v)
 
 transItem :: Item -> Result
@@ -200,7 +238,7 @@ transExpr x v = case x of
       let newVar = Variable (expType (context l)) var
       let ctx = ExpContext (expType (context l)) var (vars ++ [newVar])
       let res = var ++ " = " ++ line o ++ " " ++ expType (context l) ++ " " ++ expVar (context l) ++ ", " ++ expVar (context r)
-      Success (line r ++ "\n" ++ line l ++ "\n" ++ res) ctx
+      Success (line l ++ "\n" ++ line r ++ "\n" ++ res) ctx
     else failure "type mismatch"
   EAdd expr1 addop expr2 -> do
     let l = transExpr expr1 v
@@ -214,9 +252,22 @@ transExpr x v = case x of
       let newVar = Variable (expType (context l)) var
       let ctx = ExpContext (expType (context l)) var (vars ++ [newVar])
       let res = var ++ " = " ++ line o ++ " " ++ expType (context l) ++ " " ++ expVar (context l) ++ ", " ++ expVar (context r)
-      Success (line r ++ "\n" ++ line l ++ "\n" ++ res) ctx
+      Success (line l ++ "\n" ++ line r ++ "\n" ++ res) ctx
     else failure "type mismatch"
-  ERel expr1 relop expr2 -> failure x
+  ERel expr1 relop expr2 -> do
+    let l = transExpr expr1 v
+    let lExpVar = expVar (context l)
+    let o = transRelOp relop
+    let newV = usedVars (context l)
+    let r = transExpr expr2 newV
+    let vars = usedVars (context r)
+    if expType (context l) == expType (context r) then do
+      let var = "%" ++ show (length vars)
+      let newVar = Variable (expType (context l)) var
+      let ctx = ExpContext (expType (context l)) var (vars ++ [newVar])
+      let res = var ++ " = icmp " ++ line o ++ " " ++ expType (context l) ++ " " ++ expVar (context l) ++ ", " ++ expVar (context r)
+      Success (line l ++ "\n" ++ line r ++ "\n" ++ res) ctx
+    else failure "type mismatch"
   EAnd expr1 expr2 -> failure x
   EOr expr1 expr2 -> failure x
 transAddOp :: AddOp -> Result
@@ -230,9 +281,9 @@ transMulOp x = case x of
   Mod -> Success "mod" None
 transRelOp :: RelOp -> Result
 transRelOp x = case x of
-  LTH -> failure x
-  LE -> failure x
-  GTH -> failure x
-  GE -> failure x
-  EQU -> failure x
-  NE -> failure x
+  LTH -> Success "slt" None
+  LE -> Success "sle" None
+  GTH -> Success "sgt" None
+  GE -> Success "sge" None
+  EQU -> Success "eq" None
+  NE -> Success "ne" None
