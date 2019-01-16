@@ -6,6 +6,8 @@ import System.IO ( stdin, hGetContents )
 import System.Environment ( getArgs, getProgName )
 import System.Exit ( exitFailure, exitSuccess )
 import Control.Monad (when)
+import System.FilePath 
+import System.Process
 
 import LexLatte
 import ParLatte
@@ -35,20 +37,47 @@ putStrV :: Verbosity -> String -> IO ()
 putStrV v s = when (v > 1) $ putStrLn s
 
 runFile :: (Print a, Show a) => Verbosity -> ParseFun a -> FilePath -> IO ()
-runFile v p f = putStrLn f >> readFile f >>= run v p
+runFile v p f = do
+  let path = takeDirectory f ++ "/"
+  let name = takeBaseName f
+  putStrLn "" >> readFile f >>= run v p path name
+  -- for macOS path to LLVM
+  let llvm_as = "/usr/local/opt/llvm/bin/llvm-as -o "
+  let llvm_link = "/usr/local/opt/llvm/bin/llvm-link -o "
+  -- Linux path to LLVM
+  -- let llvm_as = "llvm-as -o "
+  -- let llvm_link = "llvm-link -o "
+  let first = llvm_as ++ path ++ name ++ "-out.bc " ++ path ++ name ++ ".ll" ++ " && "
+  let second = llvm_link ++ path ++ name ++ ".bc " ++ path ++ name ++ "-out.bc res/runtime.bc" ++ " && "
+  let third = "rm " ++ path ++ name ++ "-out.bc"
+  -- runCommand (first ++ second ++ third)
+  putStrLn (".ll and  .bc output files created in directory" ++ path ++ "\n")
 
-run :: (Print a, Show a) => Verbosity -> ParseFun a -> String -> IO ()
-run v p s = let ts = myLLexer s in case p ts of
+-- run :: (Print a, Show a) => Verbosity -> ParseFun a -> String -> IO ()
+-- run v p s = let ts = myLLexer s in case p ts of
+--            Bad s    -> do putStrLn "\nParse              Failed...\n"
+--                           putStrV v "Tokens:"
+--                           putStrV v $ show ts
+--                           putStrLn s
+--                           exitFailure
+--            Ok  tree -> do putStrLn "\nParse Successful!"
+--                           let Ok program = pProgram ts
+--                           putStrLn $ compileProgram program
+--                           -- showTree v tree
+--                           exitSuccess
+
+run :: (Print a, Show a) => Verbosity -> ParseFun a -> String -> String -> String -> IO ()
+run v p path name s = let ts = myLLexer s in case p ts of
            Bad s    -> do putStrLn "\nParse              Failed...\n"
                           putStrV v "Tokens:"
                           putStrV v $ show ts
                           putStrLn s
                           exitFailure
            Ok  tree -> do putStrLn "\nParse Successful!"
-                          let Ok program = pProgram ts
-                          putStrLn $ compileProgram program
-                          -- showTree v tree
-                          exitSuccess
+                          let Ok pr = pProgram ts
+                          let result = compileProgram pr
+                          putStrLn result
+                          writeFile (path ++ name ++ ".ll") result
 
 
 showTree :: (Show a, Print a) => Int -> a -> IO ()
@@ -73,6 +102,6 @@ main = do
   args <- getArgs
   case args of
     ["--help"] -> usage
-    [] -> getContents >>= run 2 pProgram
+    [] -> getContents >>= runFile 2 pProgram
     "-s":fs -> mapM_ (runFile 0 pProgram) fs
     fs -> mapM_ (runFile 2 pProgram) fs
