@@ -50,21 +50,8 @@ runFile v p f = do
   let first = llvm_as ++ path ++ name ++ "-out.bc " ++ path ++ name ++ ".ll" ++ " && "
   let second = llvm_link ++ path ++ name ++ ".bc " ++ path ++ name ++ "-out.bc res/runtime.bc" ++ " && "
   let third = "rm " ++ path ++ name ++ "-out.bc"
-  -- runCommand (first ++ second ++ third)
+  runCommand (first ++ second ++ third)
   putStrLn (".ll and  .bc output files created in directory" ++ path ++ "\n")
-
--- run :: (Print a, Show a) => Verbosity -> ParseFun a -> String -> IO ()
--- run v p s = let ts = myLLexer s in case p ts of
---            Bad s    -> do putStrLn "\nParse              Failed...\n"
---                           putStrV v "Tokens:"
---                           putStrV v $ show ts
---                           putStrLn s
---                           exitFailure
---            Ok  tree -> do putStrLn "\nParse Successful!"
---                           let Ok program = pProgram ts
---                           putStrLn $ compileProgram program
---                           -- showTree v tree
---                           exitSuccess
 
 run :: (Print a, Show a) => Verbosity -> ParseFun a -> String -> String -> String -> IO ()
 run v p path name s = let ts = myLLexer s in case p ts of
