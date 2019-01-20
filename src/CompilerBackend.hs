@@ -3,6 +3,7 @@ module CompilerBackend where
 import AbsLatte
 import ErrM
 import Data.String.Utils
+import Data.List.Split
 -- import Data.List.Index
 
 -- change Success to Error later --
@@ -11,15 +12,23 @@ failure x = Success "" None
 
 -- create function variable with type and name
 createFunction :: String -> String -> Variable
-createFunction t n = Variable t n n True 0 True
+createFunction t n = Variable t n n True 0 True False
 
 -- create Variable with type, name and block level
 createVariable :: String -> String -> Integer -> Variable
-createVariable t n l = Variable t n n False l False
+createVariable t n l = Variable t n n False l False True
+
+-- create Variable type, name and block level that was declared
+createDeclaredVariable :: String -> String -> Integer -> Variable
+createDeclaredVariable t n l = Variable t n n False l False False
+
+-- create Variable for label with name
+createLabel :: String -> Variable
+createLabel name = Variable "label" name name False 0 False True
 
 -- create Variable with type, name and alias
 createArgumentVariable :: String -> String -> String -> Variable
-createArgumentVariable t n a = Variable t n a False 0 False
+createArgumentVariable t n a = Variable t n a False 0 False True
 
 
 concatArray :: [String] -> String
@@ -36,13 +45,12 @@ concatArguments [x] = x
 concatArguments (x:xs) = x ++ ", " ++ concatArguments xs
 concatArguments [] = ""
 
-compileProgram :: Program -> String
-compileProgram p = case p of
-  Program topdefs -> concatArray $ map line (map transTopDef topdefs)
-
 checkDuplicate :: String -> [String] -> Bool
 checkDuplicate x [] = False
 checkDuplicate x (head: tail) = (x == head) || checkDuplicate x tail
+
+areSameType :: Variable -> Variable -> Bool
+areSameType v1 v2 = varType v1 == varType v2
 
 getType :: [Variable] -> String -> String
 getType v arg = case v of
@@ -50,6 +58,12 @@ getType v arg = case v of
     let arr = filter (\x -> name x == arg) v
     if null arr then "none" else  varType $ last arr
   [] -> "none"
+
+getFuncType :: Variable -> [String]
+getFuncType f = splitOn " " (varType f)
+
+getFuncVariable :: [Variable] -> String -> Variable
+getFuncVariable v s = last (filter (\x -> isFunc x && name x == s) v)
 
 checkDuplicateExist :: [String] -> [String] -> Bool
 checkDuplicateExist [] _ = False
@@ -62,6 +76,23 @@ findIndex :: Eq a => Integer -> a -> [a] -> Integer
 findIndex start character (x:xs) = if x == character then start else findIndex (start + 1) character xs
 findIndex start character [] = 0
 
+combineArrays :: [a] -> [b] -> [(a ,b)]
+combineArrays [x] [y] = [(x,y)]
+combineArrays (x:xs) (y:ys) = [(x, y)] ++ combineArrays xs ys
+combineArrays [] [] = []
+
+getAllocationLine :: String -> String -> String
+getAllocationLine a b = a ++ " = alloca " ++ b
+
+getStoreLine :: Variable -> Variable -> String
+getStoreLine v1 v2 = "store " ++ varType v1 ++ " %" ++ name v1 ++ ", " ++ varType v2 ++ "* " ++ alias v2
+
+nextVarName :: [Variable] -> String
+nextVarName x = "%" ++ show (1 + length (filter (\z -> isGenerated z) x))
+
+nextVarNum :: [Variable] -> String
+nextVarNum v = show (1 + length (filter (\z -> isGenerated z) v))
+
 -- copy arguments to vars --
 createFunctionDefinition :: String -> String -> String -> String -> String
 createFunctionDefinition retType name args body = "define " ++ retType ++ " @" ++ name ++ "(" ++ args ++ ") {" ++ body ++ "}"
@@ -70,36 +101,53 @@ transProgram :: Program -> Result
 transProgram x = case x of
   Program topdefs -> failure x
 
+compileProgram :: Program -> String
+compileProgram p = case p of
+  Program topdefs -> do
+    let functions = (map transFunc topdefs) ++ getAvailableFunctions
+    -- line (map (transTopDef functions) topdefs)
+    concatArray $ map (\x -> line x ++ "\n\n") (map (transTopDef functions) topdefs)
+
 transIdent :: Ident -> Result
 transIdent x = case x of
   Ident string -> Success string (ExpContext string string [])
 
-transTopDef :: TopDef -> Result
-transTopDef x = case x of
+getAvailableFunctions :: [Variable]
+getAvailableFunctions = [createFunction "void i32" "printInt",
+                          createFunction "void i8*" "printString",
+                          createFunction "void" "error",
+                          createFunction "i32 i32" "readInt",
+                          createFunction "i8* i8*" "readString"]
+
+transFunc :: TopDef -> Variable
+transFunc x = case x of 
+  FnDef type_ ident args block -> do
+    let fType = transType type_
+    let fName = line $ transIdent ident
+    let fArgTypes = map (argType . context) (map transArg args)
+    let fDesc = line fType ++ " " ++ concatWithSeparator fArgTypes " "
+    createFunction fDesc fName
+
+
+transTopDef :: [Variable] -> TopDef -> Result
+transTopDef v x = case x of
   FnDef type_ ident args block -> do 
     let translatedArgs = map transArg args
-    -- get argument names
-    let res = map (argName . context) translatedArgs
-    -- check for duplicate argument names
-    let checked = checkDuplicateExist res res
-    -- if checked == True then failure "Arguments have duplicate names"
+    let agumentContexts = map context translatedArgs
+    let argumentVars = combineArrays agumentContexts [1..length agumentContexts]
+    let variables = map (\x -> createArgumentVariable (argType (fst x)) ((argName . fst) x) ("%" ++ show (snd x))) argumentVars
 
-    let argCout = length res
-    -- concatenate arguments for LLVM form
     let argumentsLine = concatArguments $ map line translatedArgs
+    let allocArguments = map (\x -> getAllocationLine (alias x) (varType x)) variables
+    let storeArguments = map (\x -> getStoreLine x x) variables
 
-    let identity = transIdent ident
     let ftype = transType type_
+    let fName = line $ transIdent ident
+    
+    let blockLine = line (transBlock block (v ++ variables) 0)
+    let allocAndStoreArguments = "\n" ++ concatWithSeparator allocArguments "\n" ++ "\n" ++ concatWithSeparator storeArguments "\n"
 
-    let usedVariables = map (\x -> createArgumentVariable ((argType . context) x) ((argName . context) x) "alias") translatedArgs
-    let blockContext = BlockContext usedVariables
-    let b = transBlock block usedVariables 0
-    let indice = map (\x -> (getIndex x usedVariables, x)) usedVariables
-    let argumentVars = map (\x -> "%" ++ show (fst x + 1) ++ " = alloca " ++ varType (snd x)) indice
-    let initialLine = concatWithSeparator argumentVars "\n"
-    -- get function declaration in LLVM
-    let blockLine = line b
-    let result = createFunctionDefinition (line ftype) (line identity) argumentsLine (initialLine ++ blockLine)
+    let result = createFunctionDefinition (line ftype) fName argumentsLine (allocAndStoreArguments ++ blockLine)
     Success result None
 
 transArg :: Arg -> Result
@@ -121,6 +169,7 @@ transBlock x v l = case x of
     -- Success ("\n{\n" ++ a ++ "\n}\n" ++ (show . snd) st) (BlockContext (snd st))
     Success ("\n" ++ a ++ "\n") (BlockContext (snd st))
 
+-- use foldl
 translateStatements :: [Stmt] -> [Variable] -> Integer -> ([Result], [Variable])
 translateStatements (x:xs) v l = do
   let result = transStmt x v l
@@ -130,6 +179,7 @@ translateStatements (x:xs) v l = do
   (result : f, snd res)
 translateStatements [] v l = ([], v)
 
+-- use foldl
 translateExpressions :: [Expr] -> [Variable] -> Integer -> ([Result], [Variable])
 translateExpressions (x:xs) v l = do
   let result = transExpr x v l
@@ -139,49 +189,35 @@ translateExpressions (x:xs) v l = do
   (result : f, snd res)
 translateExpressions [] v l = ([], v)
 
+accumulate :: Result -> Result -> Result
+accumulate r1 r2 = case context r1 of
+  None -> Success (line r2) (StmtContext (usedVars (context r2)))
+  _ -> Success (line r1 ++ "\n" ++ line r2) (StmtContext (usedVars (context r1) ++ usedVars (context r2)))
+
 transStmt :: Stmt -> [Variable] -> Integer -> Result
 transStmt x v l = case x of
   Empty -> Success "" (StmtContext v)
   BStmt block -> transBlock block v (l + 1)
   Decl type_ items -> do
      let tp = line $ transType type_
-     let translatedItems = map transItem items
-     let ids = map (\x -> replace "_tp_" tp (line x)) translatedItems
-     let result = concatArguments ids
-     let newVars = map (\x -> createVariable tp (expVar (context x)) l) translatedItems
-     Success result (StmtContext (v ++ newVars))
+     let emptyResult = Success "" None
+     foldl (\a b -> accumulate a (transItem v l tp b)) emptyResult items
   Ass ident expr -> do
     let e = transExpr expr v l
     let e_ctx = context e
     let i = transIdent ident
     let i_ctx = context i
     let varName = expVar i_ctx
-    let filtered = map varType (filter (\x -> name x == varName) v)
-    let result = line e ++ "\nstore " ++ expType e_ctx ++ " " ++ expVar e_ctx ++ ", " ++ last filtered ++ "* %" ++ line i
+    let vType = getType v varName
+    let result = line e ++ "\nstore " ++ expType e_ctx ++ " " ++ expVar e_ctx ++ ", " ++ vType ++ "* %" ++ line i
     let newVars = usedVars e_ctx
     Success result (StmtContext newVars)
   Incr ident -> do 
-    let id = transIdent ident
-    let tp = getType v (line id)
-    let var = "%" ++ (show . length) v
-    let newVars = v ++ [createVariable "i32" var l]
-    let load = var ++ " = load i32, " ++ tp ++ "* " ++ line id ++ "\n"
-    let incVar = "%" ++ (show . length) newVars
-    let increment = incVar ++ " = add i32 " ++ var ++ ", 1\n"
-    let res = "store i32 " ++ incVar ++ ", i32* %" ++ line id
-    let retVars = newVars ++ [createVariable "i32" incVar l]
-    Success (load ++ increment ++ res) (StmtContext retVars)
+    let statement = translateUnaryStatement ident v l
+    Success (replace "_op_" "add" (line statement)) (context statement)
   Decr ident -> do
-    let id = transIdent ident
-    let tp = getType v (line id)
-    let var = "%" ++ (show . length) v
-    let newVars = v ++ [createVariable "i32" var l]
-    let load = var ++ " = load i32, " ++ tp ++ "* " ++ line id ++ "\n"
-    let incVar = "%" ++ (show . length) newVars
-    let increment = incVar ++ " = sub i32 " ++ var ++ ", 1\n"
-    let res = "store i32 " ++ incVar ++ ", i32* %" ++ line id
-    let retVars = newVars ++ [createVariable "i32" incVar l]
-    Success (load ++ increment ++ res) (StmtContext retVars)
+    let statement = translateUnaryStatement ident v l
+    Success (replace "_op_" "sub" (line statement)) (context statement)
   Ret expr -> do 
     let expression = transExpr expr v l
     Success (line expression ++ "\nret " ++ (expType . context) expression ++ " " ++ (expVar . context) expression) (StmtContext v)
@@ -189,59 +225,71 @@ transStmt x v l = case x of
   Cond expr stmt -> do
     let expression = transExpr expr v l
     let newVars = (usedVars . context) expression
-    let breakVar = "%" ++ show (length newVars)
-    let statement = transStmt stmt (newVars ++ [createVariable "label" breakVar l]) l
+    let breakVar = nextVarName newVars
+    let breakVarNum = nextVarNum newVars
+    let statement = transStmt stmt (newVars ++ [createLabel breakVar]) l
     let retVars = vars (context statement)
-    let breakVar2 = "%" ++ show (length retVars)
-    let break = "\nbr i1 " ++ ((expVar . context) expression) ++ ", label " ++ breakVar ++ ", label " ++ breakVar2 ++ "\n;<label>:" ++ breakVar
-    Success (line expression ++ break ++ line statement ++ "\n;<label> " ++ breakVar2) (StmtContext (retVars ++ [createVariable "label" breakVar2 l]))
+    let breakVar2 = nextVarName retVars
+    let breakVar2Num = nextVarNum retVars
+    let expLine = (expVar . context) expression
+    let break = "\nbr i1 " ++ expLine ++ ", label " ++ breakVar ++ ", label " ++ breakVar2 ++ "\n;<label>:" ++ breakVarNum
+    Success (line expression ++ break ++ line statement ++ "\n;<label> " ++ breakVar2Num) (StmtContext (retVars ++ [createLabel breakVar2]))
   CondElse expr stmt1 stmt2 -> do
     let expression = transExpr expr v l
     let newVars = (usedVars . context) expression
-    let breakVar = "%" ++ show (length newVars)
-    let statement1 = transStmt stmt1 (newVars ++ [createVariable "label" breakVar l]) l
+    let breakVar = nextVarName newVars
+    let breakVarNum = nextVarNum newVars
+    let statement1 = transStmt stmt1 (newVars ++ [createLabel breakVar]) l
     let stmt1Vars = vars (context statement1)
-    let statement2 = transStmt stmt2 stmt1Vars l
+
+    let breakVar2 = nextVarName stmt1Vars
+    let breakVar2Num = nextVarNum stmt1Vars
+    let statement2 = transStmt stmt2 (stmt1Vars ++ [createLabel breakVar2]) l
     let retVars = vars (context statement2)
-    let breakVar2 = "%" ++ show (length stmt1Vars)
-    let break = "\nbr i1 " ++ ((expVar . context) expression) ++ ", label " ++ breakVar ++ ", label " ++ breakVar2 ++ "\n;<label>:" ++ breakVar
+    let expLine = (expVar . context) expression
+    let break = "\nbr i1 " ++ expLine ++ ", label " ++ breakVar ++ ", label " ++ breakVar2 ++ "\n;<label>:" ++ breakVarNum
     let stmt1Line = line statement1
     let stmt2Line = line statement2
-    let finalBreak = "br label " ++ show (length retVars)
-    Success (line expression ++ break ++ stmt1Line ++ finalBreak ++ "\n;<label> " ++ breakVar2 ++ "\n" ++ stmt2Line ++ finalBreak ++ "\n;<label>:" ++ show (length retVars)) 
-      (StmtContext (retVars ++ [(createVariable "label" breakVar2 l), (createVariable "label" (show (length retVars)) l)]))
+    let breakVar3 = nextVarName retVars
+    let finalBreak = "br label " ++ breakVar3
+    let finalBreakNum = nextVarNum retVars
+    Success (line expression ++ break ++ stmt1Line ++ finalBreak ++ "\n;<label>:" ++ breakVar2Num ++ "\n" ++ stmt2Line ++ finalBreak ++ "\n;<label>:" ++ finalBreakNum) 
+      (StmtContext (retVars ++ [createLabel breakVar3]))
   While expr stmt -> do
-    let expression = transExpr expr v l
+    let whileLabelVar = nextVarName v
+    let whileLabel = "br label " ++ whileLabelVar ++ "\n;<label>:" ++ nextVarNum v ++ "\n"
+
+    let expression = transExpr expr (v ++ [createLabel whileLabelVar]) l
     let expVars = usedVars (context expression)
-    let statement = transStmt stmt expVars l
+    let stmtLabelVar = nextVarName expVars
+    let stmtLabel = ";<label>:" ++ nextVarNum expVars ++ "\n"
+    let statement = transStmt stmt (expVars ++ [createLabel stmtLabelVar]) l
     let stmtVars = vars (context statement)
-    let whileLabelVar = "%" ++ show (length v)
-    let whileLabel = ";<label>:" ++ show (length v) ++ "\n"
-    let stmtLabelVar = "%" ++ show (length expVars)
-    let stmtLabel = ";<label>:" ++ show (length expVars) ++ "\n"
-    let continuationVar = "%" ++ show (length stmtVars)
-    let continuationLabel = ";<label>:" ++ show (length stmtVars) ++ "\n"
+    let continuationVar = nextVarName stmtVars
+    let continuationLabel = ";<label>:" ++ nextVarNum stmtVars ++ "\n"
     let endStmtBreak = "br label " ++ whileLabelVar ++ "\n"
     let breakLine = "br i1 " ++ expVar (context expression) ++ ", label " ++ stmtLabelVar ++ ", label " ++ continuationVar ++ "\n"
     let returnLine = whileLabel ++ line expression ++ "\n" ++ breakLine ++ stmtLabel ++ line statement ++ endStmtBreak ++ continuationLabel
-    Success returnLine (StmtContext stmtVars)
+    Success returnLine (StmtContext (stmtVars ++ [createLabel continuationVar]))
   SExp expr -> do
     let expression = transExpr expr v l
     Success (line expression) (StmtContext (usedVars (context expression)))
 
-transItem :: Item -> Result
-transItem x = case x of
+transItem :: [Variable] -> Integer -> String -> Item -> Result
+transItem v l t x = case x of
   NoInit ident -> do 
-    let id = transIdent ident
-    Success ("%" ++ line id ++ " = alloca _tp_") (context id)
+    let id = line $ transIdent ident
+    Success ("%" ++ id ++ " = alloca " ++ t) (ExpContext t id (v ++ [createDeclaredVariable t id l]))
   Init ident expr -> do 
-    let res = transExpr expr [] 0
-    let id = transIdent ident
+    let res = transExpr expr v l
+    let id = line $ transIdent ident
     let exp = line res
     let ctx = context res
-    let def = "%" ++ line id ++ " = alloca " ++ expType ctx
-    let init = "store " ++ expType ctx ++ " " ++ expVar ctx ++ ", _tp_* %" ++ line id
-    Success (def ++ "\n" ++ init) (ExpContext (expType ctx)  (line id) [])
+    let vars = usedVars ctx
+    -- type check
+    let def = "%" ++ id ++ " = alloca " ++ expType ctx
+    let init = "store " ++ expType ctx ++ " " ++ expVar ctx ++ ", " ++ t ++"* %" ++ id
+    Success (line res ++ def ++ "\n" ++ init) (ExpContext (expType ctx)  id (vars ++ [createDeclaredVariable t id l]))
 transType :: Type -> Result
 transType x = case x of
   Int -> Success "i32" None
@@ -256,12 +304,12 @@ transExpr x v level = case x of
     let id = transIdent ident
     let name = line id
     let tp = getType v name
-    let var = "%" ++ show (length v)
+    let var = nextVarName v
     let vars = v ++ [createVariable tp name level]
     Success (var ++ " = load " ++ tp ++ ", " ++ tp ++ "* %" ++ line id) (ExpContext tp var vars)
   ELitInt integer -> Success "" (ExpContext "i32" (show integer) v)
-  ELitTrue -> Success "1" (ExpContext "i1" "1" v)
-  ELitFalse -> Success "0" (ExpContext "i1" "0" v)
+  ELitTrue -> Success "" (ExpContext "i1" "1" v)
+  ELitFalse -> Success "" (ExpContext "i1" "0" v)
   EApp ident exprs -> do
     let resultsVariablesTuple = translateExpressions exprs v level
     let results = fst resultsVariablesTuple
@@ -271,50 +319,32 @@ transExpr x v level = case x of
     let lines = map line results
     let expLines = concatWithSeparator lines "\n"
     let id = transIdent ident
-    let retVarNum = length variables
-    let retVar = "%" ++ show retVarNum
-    let funcType = getType variables (line id)
-    let callLine = expLines ++ retVar ++ " = call " ++ funcType ++ " @" ++ (line id) ++ "(" ++ arguments ++ ")"
-    let usedVars = variables ++ [createVariable funcType retVar level]
-    Success callLine (ExpContext funcType retVar usedVars)
-  EString string -> Success string (ExpContext "i8*" string v)
+    let retVar = nextVarName variables
+    let funcType = getFuncType (getFuncVariable variables (line id))
+    let returnType = head funcType
+    case returnType of
+      "void" -> do
+        let callLine = expLines ++ "\n" ++ "call " ++ returnType ++ " @" ++ line id ++ "(" ++ arguments ++ ")"
+        Success callLine (ExpContext returnType retVar variables)
+      _ -> do
+        let callLine = expLines ++ "\n" ++ retVar ++ " = call " ++ returnType ++ " @" ++ line id ++ "(" ++ arguments ++ ")"
+        let usedVars = variables ++ [createVariable returnType retVar level]
+        Success callLine (ExpContext returnType retVar usedVars)
+  EString string -> Success "" (ExpContext "i8*" ("\"" ++ string ++ "\"") v)
   Neg expr -> do 
     let expression = transExpr expr v level
     let expressionVar = expVar (context expression)
     let expVars = usedVars (context expression)
-    let varNum = show (length expVars)
-    let negVar = "%" ++ varNum
+    let negVar = nextVarName expVars
     let negative = negVar ++ " = mul i32 -1, " ++ expressionVar
     Success (line expression ++ "\n" ++ negative) (ExpContext "i32" negVar (expVars ++ [createVariable "i32" negVar level]))
-  Not expr -> failure x -- To be implemented --
+  Not expr -> failure x -- TODO: To be implemented --
   EMul expr1 mulop expr2 -> do
-    let l = transExpr expr1 v level
-    let lExpVar = expVar (context l)
-    let o = transMulOp mulop
-    let newV = usedVars (context l)
-    let r = transExpr expr2 newV level
-    let vars = usedVars (context r)
-    if expType (context l) == expType (context r) then do
-      let var = "%" ++ show (length vars)
-      let newVar = createVariable (expType (context l)) var level
-      let ctx = ExpContext (expType (context l)) var (vars ++ [newVar])
-      let res = var ++ " = " ++ line o ++ " " ++ expType (context l) ++ " " ++ expVar (context l) ++ ", " ++ expVar (context r)
-      Success (line l ++ "\n" ++ line r ++ "\n" ++ res) ctx
-    else failure "type mismatch"
+    let translated = translateBinaryExpression expr1 expr2 v level
+    Success (replace "_op_" "mul" (line translated)) (context translated)
   EAdd expr1 addop expr2 -> do
-    let l = transExpr expr1 v level
-    let lExpVar = expVar (context l)
-    let o = transAddOp addop
-    let newV = usedVars (context l)
-    let r = transExpr expr2 newV level
-    let vars = usedVars (context r)
-    if expType (context l) == expType (context r) then do
-      let var = "%" ++ show (length vars)
-      let newVar = createVariable (expType (context l)) var level
-      let ctx = ExpContext (expType (context l)) var (vars ++ [newVar])
-      let res = var ++ " = " ++ line o ++ " " ++ expType (context l) ++ " " ++ expVar (context l) ++ ", " ++ expVar (context r)
-      Success (line l ++ "\n" ++ line r ++ "\n" ++ res) ctx
-    else failure "type mismatch"
+    let translated = translateBinaryExpression expr1 expr2 v level
+    Success (replace "_op_" "add" (line translated)) (context translated)
   ERel expr1 relop expr2 -> do
     let l = transExpr expr1 v level
     let lExpVar = expVar (context l)
@@ -323,10 +353,10 @@ transExpr x v level = case x of
     let r = transExpr expr2 newV level
     let vars = usedVars (context r)
     if expType (context l) == expType (context r) then do
-      let var = "%" ++ show (length vars)
+      let var = nextVarName vars
       let newVar = createVariable (expType (context l)) var level
       let ctx = ExpContext (expType (context l)) var (vars ++ [newVar])
-      let res = var ++ " = icmp " ++ line o ++ " " ++ expType (context l) ++ " " ++ expVar (context l) ++ ", " ++ expVar (context r)
+      let res = var ++ " = icmp " ++ line o ++ " " ++ expType (context l) ++ " " ++ lExpVar ++ ", " ++ expVar (context r)
       Success (line l ++ "\n" ++ line r ++ "\n" ++ res) ctx
     else failure "type mismatch"
   EAnd expr1 expr2 -> do
@@ -336,16 +366,47 @@ transExpr x v level = case x of
     let translated = translateBooleanExpression expr1 expr2 v level
     Success (replace "_op_" "or" (line translated)) (context translated)
 
+
+translateUnaryStatement :: Ident -> [Variable] -> Integer -> Result
+translateUnaryStatement ident v l = do 
+  let id = transIdent ident
+  let tp = getType v (line id)
+  let var = nextVarName v
+  let newVars = v ++ [createVariable "i32" var l]
+  let load = var ++ " = load i32, " ++ tp ++ "* %" ++ line id ++ "\n"
+  let incVar = nextVarName newVars
+  let increment = incVar ++ " = _op_ i32 " ++ var ++ ", 1\n"
+  let res = "store i32 " ++ incVar ++ ", i32* %" ++ line id
+  let retVars = newVars ++ [createVariable "i32" incVar l]
+  Success (load ++ increment ++ res) (StmtContext retVars)
+
+
+translateBinaryExpression :: Expr -> Expr -> [Variable] -> Integer -> Result
+translateBinaryExpression expr1 expr2 v level = do
+  let l = transExpr expr1 v level
+  let lvars = usedVars (context l)
+  let lvar = createVariable (expType $ context l) (expVar $ context l) level
+  let r = transExpr expr2 lvars level
+  let rvars = usedVars (context r)
+  let rvar = createVariable (expType $ context r) (expVar $ context r) level
+
+  if areSameType lvar rvar then do
+    let opVarName = nextVarName rvars
+    let res = opVarName ++ " = _op_ " ++ varType lvar ++ " " ++ alias lvar ++ ", " ++ alias rvar
+    let retVars = rvars ++ [createVariable (varType lvar) opVarName level]
+    let ctx = ExpContext (varType lvar) opVarName retVars
+    Success (line l ++ "\n" ++ line r ++ "\n" ++ res ++ "\n") ctx
+  else failure "type mismatch"
+
 translateBooleanExpression :: Expr -> Expr -> [Variable] -> Integer -> Result
 translateBooleanExpression expr1 expr2 v level = do
   let l = transExpr expr1 v level
   let lvars = usedVars (context l)
   let lvar = expVar (context l)
   let r = transExpr expr2 lvars level
-  let rvars = usedVars (context l)
+  let rvars = usedVars (context r)
   let rvar = expVar (context r)
-  let varNum = show (length rvars)
-  let orVar = "%" ++ varNum
+  let orVar = nextVarName rvars
   let res = orVar ++ " = _op_ i1 " ++ lvar ++ ", " ++ rvar
   let retVars = rvars ++ [createVariable "i1" orVar level]
   let ctx = ExpContext "i1" orVar retVars

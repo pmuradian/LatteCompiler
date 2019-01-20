@@ -48,7 +48,7 @@ runFile v p f = do
   -- let llvm_as = "llvm-as -o "
   -- let llvm_link = "llvm-link -o "
   let first = llvm_as ++ path ++ name ++ "-out.bc " ++ path ++ name ++ ".ll" ++ " && "
-  let second = llvm_link ++ path ++ name ++ ".bc " ++ path ++ name ++ "-out.bc res/runtime.bc" ++ " && "
+  let second = llvm_link ++ path ++ name ++ ".bc " ++ path ++ name ++ "-out.bc /Users/azazel/Documents/Projects/MIMUW/LatteCompiler/Latte/res/runtime.bc" ++ " && "
   let third = "rm " ++ path ++ name ++ "-out.bc"
   runCommand (first ++ second ++ third)
   putStrLn (".ll and  .bc output files created in directory" ++ path ++ "\n")
@@ -62,7 +62,8 @@ run v p path name s = let ts = myLLexer s in case p ts of
                           exitFailure
            Ok  tree -> do putStrLn "\nParse Successful!"
                           let Ok pr = pProgram ts
-                          let result = compileProgram pr
+                          let availableFunctions = "declare void @printInt(i32)\n" ++ "declare void @printString(i8*)\n" ++ "declare void @error()\n" ++ "declare i32 @readInt()\n" ++ "declare i8* @readString()\n\n"
+                          let result = availableFunctions ++ compileProgram pr
                           putStrLn result
                           writeFile (path ++ name ++ ".ll") result
 
