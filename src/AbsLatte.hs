@@ -6,6 +6,8 @@ module AbsLatte where
 
 -- Custom Data types
 data Variable = Variable {varType :: String, name :: String, alias :: String, isFunc :: Bool, level :: Integer, isUsed :: Bool, isGenerated :: Bool}
+                | BlockCounter {varType :: String, name :: String, alias :: String, isFunc :: Bool, level :: Integer, isUsed :: Bool, isGenerated :: Bool, count :: Integer, prevBlocks :: [Integer]}
+                | EmptyVar
   deriving (Eq, Ord, Show, Read)
 
 data Context 
