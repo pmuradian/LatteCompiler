@@ -203,8 +203,7 @@ transBlock x v l = case x of
     -- if hasDuplicateNames then failure "Duplicate name found" None else
     let a = concatWithSeparator (map line statements) "\n"
     let retVars = findAndDecrementBlockCounter $ snd st
-    -- Success ("\n" ++ a ++ "\n" ++ (show . snd) st) (BlockContext retVars)
-    Success ("\n" ++ a ++ "\n") (BlockContext (snd st))
+    Success ("\n" ++ a ++ "\n") (BlockContext retVars)
 
 -- use foldl
 translateStatements :: [Stmt] -> [Variable] -> Integer -> ([Result], [Variable])
@@ -282,15 +281,15 @@ transStmt x v l = case x of
 
     let statement = transStmt stmt (updatedVars ++ [createLabel breakVar]) level
     let tempRetVars = filter (\x -> varType x /= "ret") (vars (context statement))
-    let mustReturn = (length tempRetVars) == length (vars $ context statement)
+    -- let mustReturn = (length tempRetVars) == length (vars $ context statement)
     let breakVar2 = nextVarName tempRetVars
     let breakVar2Num = nextVarNum tempRetVars
     -- decrement blockCount if stmt is not a block statement
-    let retVars = if isBlockStatement stmt then newVars else findAndDecrementBlockCounter tempRetVars
+    let retVars = if isBlockStatement stmt then tempRetVars else findAndDecrementBlockCounter tempRetVars
     
     let expLine = (expVar . context) expression
     let break = "\nbr i1 " ++ expLine ++ ", label " ++ breakVar ++ ", label " ++ breakVar2 ++ "\n;<label>:" ++ breakVarNum
-    Success (line expression ++ break ++ line statement ++ "\n;<label> " ++ breakVar2Num) (StmtContext (retVars ++ [createLabel breakVar2]))
+    Success (line expression ++ break ++ line statement ++ "\n;<label>:" ++ breakVar2Num) (StmtContext (retVars ++ [createLabel breakVar2]))
   CondElse expr stmt1 stmt2 -> do
     let expression = transExpr expr v l
     let newVars = (usedVars . context) expression
@@ -342,7 +341,7 @@ transStmt x v l = case x of
     let grtuct = if isBlockStatement stmt then stmtVars else findAndDecrementBlockCounter stmtVars
 
     let continuationLabel = ";<label>:" ++ nextVarNum grtuct ++ "\n"
-    let endStmtBreak = "br label " ++ whileLabelVar ++ "\n"
+    let endStmtBreak = "\nbr label " ++ whileLabelVar ++ "\n"
     let breakLine = "br i1 " ++ expVar (context expression) ++ ", label " ++ stmtLabelVar ++ ", label " ++ continuationVar ++ "\n"
     let returnLine = whileLabel ++ line expression ++ "\n" ++ breakLine ++ stmtLabel ++ line statement ++ endStmtBreak ++ continuationLabel
     Success returnLine (StmtContext (grtuct ++ [createLabel continuationVar]))
@@ -360,6 +359,8 @@ transItem v l t x = case x of
   NoInit ident -> do 
     let id = line $ transIdent ident
     let newName = nameVariable id v
+    let alloc = "%" ++ newName ++ " = alloca " ++ t
+    let init = "init line"
     Success ("%" ++ newName ++ " = alloca " ++ t) (ExpContext t id (v ++ [createDeclaredVariableWithAlias t id newName l]))
   Init ident expr -> do 
     let res = transExpr expr v l
@@ -433,13 +434,18 @@ transExpr x v level = case x of
     let negVar = nextVarName expVars
     let negative = negVar ++ " = mul i32 -1, " ++ expressionVar
     Success (line expression ++ "\n" ++ negative) (ExpContext "i32" negVar (expVars ++ [createVariable "i32" negVar level]))
-  Not expr -> failure x -- TODO: To be implemented --
+  Not expr -> do 
+    let expression = transExpr expr v level
+    let ctx = context expression
+    let var = nextVarName $ usedVars ctx
+    let retLine = var ++ " = xor i1 " ++ expVar ctx ++ ", 1\n"
+    Success (line expression ++ "\n" ++ retLine) (ExpContext "i1" var (usedVars ctx ++ [createVariable "i1" var level]))
   EMul expr1 mulop expr2 -> do
     let translated = translateBinaryExpression expr1 expr2 v level
-    Success (replace "_op_" "mul" (line translated)) (context translated)
+    Success (replace "_op_" (line $ transMulOp mulop) (line translated)) (context translated)
   EAdd expr1 addop expr2 -> do
     let translated = translateBinaryExpression expr1 expr2 v level
-    Success (replace "_op_" "add" (line translated)) (context translated)
+    Success (replace "_op_" (line $ transAddOp addop) (line translated)) (context translated)
   ERel expr1 relop expr2 -> do
     let l = transExpr expr1 v level
     let lExpVar = expVar (context l)
@@ -449,8 +455,8 @@ transExpr x v level = case x of
     let vars = usedVars (context r)
     if expType (context l) == expType (context r) then do
       let var = nextVarName vars
-      let newVar = createVariable (expType (context l)) var level
-      let ctx = ExpContext (expType (context l)) var (vars ++ [newVar])
+      let newVar = createVariable "i1" var level
+      let ctx = ExpContext "i1" var (vars ++ [newVar])
       let res = var ++ " = icmp " ++ line o ++ " " ++ expType (context l) ++ " " ++ lExpVar ++ ", " ++ expVar (context r)
       Success (line l ++ "\n" ++ line r ++ "\n" ++ res) ctx
     else failure "type mismatch"
@@ -476,7 +482,6 @@ translateUnaryStatement ident v l = do
   let retVars = newVars ++ [createVariable "i32" incVar l]
   Success (load ++ increment ++ res) (StmtContext retVars)
 
-
 translateBinaryExpression :: Expr -> Expr -> [Variable] -> Integer -> Result
 translateBinaryExpression expr1 expr2 v level = do
   let l = transExpr expr1 v level
@@ -488,7 +493,8 @@ translateBinaryExpression expr1 expr2 v level = do
 
   if areSameType lvar rvar then do
     let opVarName = nextVarName rvars
-    let res = opVarName ++ " = _op_ " ++ varType lvar ++ " " ++ alias lvar ++ ", " ++ alias rvar
+    let res = if varType lvar /= "i8*" then opVarName ++ " = _op_ " ++ varType lvar ++ " " ++ alias lvar ++ ", " ++ alias rvar
+        else opVarName ++ " = call i8* @concat(i8* " ++ alias lvar ++ ", i8* " ++ alias rvar ++ ")"
     let retVars = rvars ++ [createVariable (varType lvar) opVarName level]
     let ctx = ExpContext (varType lvar) opVarName retVars
     Success (line l ++ "\n" ++ line r ++ "\n" ++ res ++ "\n") ctx
@@ -515,7 +521,7 @@ transAddOp x = case x of
 transMulOp :: MulOp -> Result
 transMulOp x = case x of
   Times -> Success "mul" None
-  Div -> Success "div" None
+  Div -> Success "sdiv" None
   Mod -> Success "mod" None
 transRelOp :: RelOp -> Result
 transRelOp x = case x of
