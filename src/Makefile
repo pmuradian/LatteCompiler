@@ -10,4 +10,9 @@ distclean: clean
 	-rm -f DocLatte.* LexLatte.* ParLatte.* LayoutLatte.* SkelLatte.* PrintLatte.* TestLatte.* AbsLatte.* TestLatte ErrM.* SharedString.* ComposOp.* latte.dtd XMLLatte.* Makefile*
 	
 test: all
-	./TestLatte ~/Downloads/lattests/good/core001.lat
+	./TestLatte ~/Downloads/lattests/bad/bad003.lat
+	# ./TestLatte ~/Downloads/lattests/good/core001.lat
+	# ./TestLatte ~/Downloads/lattests/good/core003.lat
+	# ./TestLatte ~/Downloads/lattests/good/core009.lat
+	# ./TestLatte ~/Downloads/lattests/good/core0021.lat
+	# ./TestLatte ~/Downloads/lattests/good/core0017.lat

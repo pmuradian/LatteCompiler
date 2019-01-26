@@ -56,16 +56,21 @@ runFile v p f = do
 run :: (Print a, Show a) => Verbosity -> ParseFun a -> String -> String -> String -> IO ()
 run v p path name s = let ts = myLLexer s in case p ts of
            Bad s    -> do putStrLn "\nParse              Failed...\n"
-                          putStrV v "Tokens:"
-                          putStrV v $ show ts
+                          -- putStrV v "Tokens:"
+                          -- putStrV v $ show ts
                           putStrLn s
                           exitFailure
            Ok  tree -> do putStrLn "\nParse Successful!"
                           let Ok pr = pProgram ts
                           let availableFunctions = "declare i8* @concat(i8*, i8*)\n" ++ "declare i32 @strlen(i8*)\n" ++ "declare i8* @strcat(i8*, i8*)\n" ++ "declare i8* @strcpy(i8*, i8*)\n" ++ "declare i8* @malloc(i32)\n" ++ "declare void @printInt(i32)\n" ++ "declare void @printString(i8*)\n" ++ "declare void @error()\n" ++ "declare i32 @readInt()\n" ++ "declare i8* @readString()\n\n"
-                          let result = availableFunctions ++ compileProgram pr
-                          putStrLn result
-                          writeFile (path ++ name ++ ".ll") result
+                          case compileProgram pr of
+                            Success l c -> do
+                              let result = availableFunctions ++ l
+                              putStrLn result
+                              writeFile (path ++ name ++ ".ll") result
+                            Error l c -> do
+                              putStrLn l
+                              exitSuccess
 
 
 showTree :: (Show a, Print a) => Int -> a -> IO ()

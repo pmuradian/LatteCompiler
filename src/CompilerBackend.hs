@@ -67,9 +67,9 @@ concatArguments [x] = x
 concatArguments (x:xs) = x ++ ", " ++ concatArguments xs
 concatArguments [] = ""
 
-checkDuplicate :: String -> [String] -> Bool
-checkDuplicate x [] = False
-checkDuplicate x (head: tail) = (x == head) || checkDuplicate x tail
+checkDuplicate :: Variable -> [Variable] -> Variable
+checkDuplicate x [] = EmptyVar
+checkDuplicate x (head: tail) = if (name x == name head) && (level x == level head) then x else checkDuplicate x tail
 
 areSameType :: Variable -> Variable -> Bool
 areSameType v1 v2 = varType v1 == varType v2
@@ -87,9 +87,9 @@ getFuncType f = splitOn " " (varType f)
 getFuncVariable :: [Variable] -> String -> Variable
 getFuncVariable v s = last (filter (\x -> isFunc x && name x == s) v)
 
-checkDuplicateExist :: [String] -> [String] -> Bool
-checkDuplicateExist [] _ = False
-checkDuplicateExist (x:xs) vals = checkDuplicate x vals || checkDuplicateExist xs vals
+checkForDuplicate :: [Variable] -> [Variable] -> Variable
+checkForDuplicate [] _ = EmptyVar
+checkForDuplicate (x:xs) vals = if checkDuplicate x vals /= EmptyVar then x else checkForDuplicate xs vals
 
 getIndex :: Eq a => a -> [a] -> Integer
 getIndex i v = findIndex 0 i v
@@ -123,14 +123,25 @@ transProgram :: Program -> Result
 transProgram x = case x of
   Program topdefs -> failure x
 
-compileProgram :: Program -> String
+getContextVars :: Result -> [Variable]
+getContextVars r = case context r of
+  None -> []
+  _ -> vars $ context r
+
+compileProgram :: Program -> Result
 compileProgram p = case p of
   Program topdefs -> do
     let functions = (map transFunc topdefs) ++ getAvailableFunctions
-    let initialResult = Success "" (StmtContext [])
-    let folded = foldl (\a b -> accumulate a (transTopDef (functions ++ (vars $ context a)) b)) initialResult topdefs
-    let constants = concatWithSeparator (map (\x -> alias x ++ " = internal constant [" ++ show (1 + length (name x)) ++ " x i8] c\"" ++ name x ++ "\00\"") (vars (context folded))) "\n"
-    constants ++ "\n\n" ++ line folded
+    if length (filter (\x -> name x == "main") functions) == 0 then
+      Error "missing function main()" None
+    else do
+      let initialResult = Success "" (StmtContext [])
+      let folded = foldl (\a b -> accumulate a (transTopDef (functions ++ (getContextVars a)) b)) initialResult topdefs
+      case folded of
+        Error l c -> Error l c
+        _ -> do 
+          let constants = concatWithSeparator (map (\x -> alias x ++ " = internal constant [" ++ show (1 + length (name x)) ++ " x i8] c\"" ++ name x ++ "\00\"") (vars (context folded))) "\n"
+          Success (constants ++ "\n\n" ++ line folded) None
 
 transIdent :: Ident -> Result
 transIdent x = case x of
@@ -165,23 +176,26 @@ transTopDef v x = case x of
     let retVar = createVariable (line ftype) "1" 1
     let variables = map (\x -> createArgumentVariable (argType (fst x)) ((argName . fst) x) (show (snd x))) argumentVars
 
-    let argumentsLine = concatArguments $ map line translatedArgs
-    let allocArguments = map (\x -> getAllocationLine ("%" ++ alias x) (varType x)) variables
-    let storeArguments = map (\x -> getStoreLine x x) variables
+    case checkForDuplicate variables variables of
+      EmptyVar -> do
+        let argumentsLine = concatArguments $ map line translatedArgs
+        let allocArguments = map (\x -> getAllocationLine ("%" ++ alias x) (varType x)) variables
+        let storeArguments = map (\x -> getStoreLine x x) variables
 
-    let blockCounter = [createBlockCounter]
-    
-    let blockResult = transBlock block (blockCounter ++ v ++ [retVar] ++ variables) 0
-    let blockLine = line blockResult
-    let constantStrings = filter (\x -> varType x == "i8") (vars $ context blockResult)
-    let retVarType = if line ftype == "void" then "i32" else line ftype
-    let allocAndStoreArguments = "\n" ++ "%1 = alloca " ++ retVarType ++ "\n" ++ concatWithSeparator allocArguments "\n" ++ "\n" ++ concatWithSeparator storeArguments "\n"
-    let finalVar = nextVarName (vars $ context blockResult)
-    let loadReturnVar = if line ftype == "void" then "\n" else (finalVar ++ " = load " ++ line ftype ++ ", " ++ line ftype ++ "* %1\n")
-    let returnLine = "\nbr label %return\nreturn:\n" ++ loadReturnVar ++ "\n" ++ if line ftype == "void" then "ret void" else ("" ++ "\nret " ++ line ftype ++ " " ++ finalVar)
-    -- let constants = concatWithSeparator (map (\x -> alias x ++ " = internal constant [" ++ show (1 + length (name x)) ++ " x i8] c\"" ++ name x ++ "\00\"") (filter (\x -> varType x == "i8") blockVariables)) "\n"
-    let result = createFunctionDefinition (line ftype) fName argumentsLine (allocAndStoreArguments ++ blockLine) returnLine
-    Success (result) (StmtContext constantStrings)
+        let blockCounter = [createBlockCounter]
+
+        let blockResult = transBlock block (blockCounter ++ v ++ [retVar] ++ variables) 0
+        let blockLine = line blockResult
+        let constantStrings = filter (\x -> varType x == "i8") (vars $ context blockResult)
+        let retVarType = if line ftype == "void" then "i32" else line ftype
+        let allocAndStoreArguments = "\n" ++ "%1 = alloca " ++ retVarType ++ "\n" ++ concatWithSeparator allocArguments "\n" ++ "\n" ++ concatWithSeparator storeArguments "\n"
+        let finalVar = nextVarName (vars $ context blockResult)
+        let loadReturnVar = if line ftype == "void" then "\n" else (finalVar ++ " = load " ++ line ftype ++ ", " ++ line ftype ++ "* %1\n")
+        let returnLine = "\nbr label %return\nreturn:\n" ++ loadReturnVar ++ "\n" ++ if line ftype == "void" then "ret void" else ("" ++ "\nret " ++ line ftype ++ " " ++ finalVar)
+        -- let constants = concatWithSeparator (map (\x -> alias x ++ " = internal constant [" ++ show (1 + length (name x)) ++ " x i8] c\"" ++ name x ++ "\00\"") (filter (\x -> varType x == "i8") blockVariables)) "\n"
+        let result = createFunctionDefinition (line ftype) fName argumentsLine (allocAndStoreArguments ++ blockLine) returnLine
+        Success (result) (StmtContext constantStrings)
+      _ ->  Error "Duplicate variable name" None
 
 transArg :: Arg -> Result
 transArg x = case x of
@@ -199,7 +213,7 @@ transBlock x v l = case x of
     let st = translateStatements stmts newVars currentBlock
     let statements = fst st
     let names = map (argName . context) statements
-    let hasDuplicateNames = checkDuplicateExist names names
+    -- let hasDuplicateNames = checkDuplicateExist names names
     -- if hasDuplicateNames then failure "Duplicate name found" None else
     let a = concatWithSeparator (map line statements) "\n"
     let retVars = findAndDecrementBlockCounter $ snd st
@@ -229,6 +243,7 @@ accumulate :: Result -> Result -> Result
 accumulate r1 r2 = case context r2 of
   ExpContext _ _ v -> Success (line r1 ++ "\n" ++ line r2) (StmtContext v)
   StmtContext v -> Success (line r1 ++ "\n" ++ line r2) (StmtContext v)
+  None -> Error (line r2) None
 
 isBlockStatement :: Stmt -> Bool
 isBlockStatement stmt = case stmt of
@@ -361,6 +376,7 @@ transItem v l t x = case x of
     let newName = nameVariable id v
     let alloc = "%" ++ newName ++ " = alloca " ++ t
     let init = "init line"
+    --  TODO assign initial values
     Success ("%" ++ newName ++ " = alloca " ++ t) (ExpContext t id (v ++ [createDeclaredVariableWithAlias t id newName l]))
   Init ident expr -> do 
     let res = transExpr expr v l

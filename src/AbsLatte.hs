@@ -21,7 +21,7 @@ data Context
   deriving (Eq, Ord, Show, Read)
 data Result 
     = Success {line :: String, context :: Context}
-    | Error {message :: String, context :: Context} 
+    | Error {line :: String, context :: Context} 
   deriving (Eq, Ord, Show, Read)
 -- End of custom data types
 
