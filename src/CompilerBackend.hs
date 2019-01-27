@@ -126,7 +126,8 @@ transProgram x = case x of
 getContextVars :: Result -> [Variable]
 getContextVars r = case context r of
   None -> []
-  _ -> vars $ context r
+  StmtContext {} -> vars $ context r
+  ExpContext {} -> usedVars $ context r
 
 compileProgram :: Program -> Result
 compileProgram p = case p of
@@ -185,17 +186,22 @@ transTopDef v x = case x of
         let blockCounter = [createBlockCounter]
 
         let blockResult = transBlock block (blockCounter ++ v ++ [retVar] ++ variables) 0
-        let blockLine = line blockResult
-        let constantStrings = filter (\x -> varType x == "i8") (vars $ context blockResult)
-        let retVarType = if line ftype == "void" then "i32" else line ftype
-        let allocAndStoreArguments = "\n" ++ "%1 = alloca " ++ retVarType ++ "\n" ++ concatWithSeparator allocArguments "\n" ++ "\n" ++ concatWithSeparator storeArguments "\n"
-        let finalVar = nextVarName (vars $ context blockResult)
-        let loadReturnVar = if line ftype == "void" then "\n" else (finalVar ++ " = load " ++ line ftype ++ ", " ++ line ftype ++ "* %1\n")
-        let returnLine = "\nbr label %return\nreturn:\n" ++ loadReturnVar ++ "\n" ++ if line ftype == "void" then "ret void" else ("" ++ "\nret " ++ line ftype ++ " " ++ finalVar)
-        -- let constants = concatWithSeparator (map (\x -> alias x ++ " = internal constant [" ++ show (1 + length (name x)) ++ " x i8] c\"" ++ name x ++ "\00\"") (filter (\x -> varType x == "i8") blockVariables)) "\n"
-        let result = createFunctionDefinition (line ftype) fName argumentsLine (allocAndStoreArguments ++ blockLine) returnLine
-        Success (result) (StmtContext constantStrings)
-      _ ->  Error "Duplicate variable name" None
+
+        case blockResult of 
+          Error l c -> Error l c
+          Success l c -> do
+            let blockLine = line blockResult
+            let constantStrings = filter (\x -> varType x == "i8") (vars $ context blockResult)
+            let retVarType = if line ftype == "void" then "i32" else line ftype
+            let allocAndStoreArguments = "\n" ++ "%1 = alloca " ++ retVarType ++ "\n" ++ concatWithSeparator allocArguments "\n" ++ "\n" ++ concatWithSeparator storeArguments "\n"
+            let finalVar = nextVarName (vars $ context blockResult)
+            let loadReturnVar = if line ftype == "void" then "\n" 
+                                else (finalVar ++ " = load " ++ line ftype ++ ", " ++ line ftype ++ "* %1\n")
+            let returnLine = "\nbr label %return\nreturn:\n" ++ loadReturnVar ++ "\n" ++ if line ftype == "void" then "ret void" 
+                                                                                         else ("" ++ "\nret " ++ line ftype ++ " " ++ finalVar)
+            let result = createFunctionDefinition (line ftype) fName argumentsLine (allocAndStoreArguments ++ blockLine) returnLine
+            Success (result) (StmtContext constantStrings)
+      variable ->  Error ("Duplicate variable name: " ++ name variable) None
 
 transArg :: Arg -> Result
 transArg x = case x of
@@ -208,35 +214,40 @@ transBlock :: Block -> [Variable] -> Integer -> Result
 transBlock x v l = case x of
   Block stmts -> do
     let newVars = findAndIncrementBlockCounter v
-
     let currentBlock = last $ prevBlocks (getBlockCounter newVars)
     let st = translateStatements stmts newVars currentBlock
     let statements = fst st
-    let names = map (argName . context) statements
-    -- let hasDuplicateNames = checkDuplicateExist names names
-    -- if hasDuplicateNames then failure "Duplicate name found" None else
-    let a = concatWithSeparator (map line statements) "\n"
-    let retVars = findAndDecrementBlockCounter $ snd st
-    Success ("\n" ++ a ++ "\n") (BlockContext retVars)
+    case statements of
+      [Error l c] -> Error l c
+      _ -> do
+        let a = concatWithSeparator (map line statements) "\n"
+        let retVars = findAndDecrementBlockCounter $ snd st
+        Success ("\n" ++ a ++ "\n") (BlockContext retVars)
 
 -- use foldl
 translateStatements :: [Stmt] -> [Variable] -> Integer -> ([Result], [Variable])
 translateStatements (x:xs) v l = do
   let result = transStmt x v l
-  let updatedVars = (vars . context) result
-  let res = translateStatements xs updatedVars l
-  let f = fst res
-  (result : f, snd res)
+  case result of 
+    Error line c -> ([Error line c], v)
+    Success line c -> do
+      let updatedVars = (vars . context) result
+      let res = translateStatements xs updatedVars l
+      let f = fst res
+      (result : f, snd res)
 translateStatements [] v l = ([], v)
 
 -- use foldl
 translateExpressions :: [Expr] -> [Variable] -> Integer -> ([Result], [Variable])
 translateExpressions (x:xs) v l = do
   let result = transExpr x v l
-  let updatedVars = (usedVars . context) result
-  let res = translateExpressions xs updatedVars l
-  let f = fst res
-  (result : f, snd res)
+  case result of 
+    Error line c -> ([Error line c], v)
+    Success line c -> do
+      let updatedVars = (usedVars . context) result
+      let res = translateExpressions xs updatedVars l
+      let f = fst res
+      (result : f, snd res)
 translateExpressions [] v l = ([], v)
 
 accumulate :: Result -> Result -> Result
@@ -260,51 +271,70 @@ transStmt x v l = case x of
   Decl type_ items -> do
     let tp = line $ transType type_
     let initialResult = Success "" (StmtContext v)
-    foldl (\a b -> accumulate a (transItem (vars $ context a) l tp b)) initialResult items
+    foldl (\a b -> accumulate a (transItem (getContextVars a) l tp b)) initialResult items
   Ass ident expr -> do
     let e = transExpr expr v l
-    let e_ctx = context e
-    let i = transIdent ident
-    let i_ctx = context i
-    let varName = expVar i_ctx
-    let declaredVar = getDeclaredVariable varName v
-    let vType = getType v (alias declaredVar)
-    let result = line e ++ "\nstore " ++ expType e_ctx ++ " " ++ expVar e_ctx ++ ", " ++ vType ++ "* %" ++ alias declaredVar
-    let newVars = usedVars e_ctx
-    Success result (StmtContext newVars)
+    case e of 
+      Error ln c -> Error ln c
+      Success ln c -> do
+        let e_ctx = context e
+        let i = transIdent ident
+        let i_ctx = context i
+        let varName = expVar i_ctx
+        let declaredVar = getDeclaredVariable varName v
+        case declaredVar of
+          EmptyVar -> Error ("variable " ++ line i ++ " not declared") None
+          _ -> do
+            let vType = getType v (alias declaredVar)
+            let result = line e ++ "\nstore " ++ expType e_ctx ++ " " ++ expVar e_ctx ++ ", " ++ vType ++ "* %" ++ alias declaredVar
+            let newVars = usedVars e_ctx
+            Success result (StmtContext newVars)
   Incr ident -> do 
     let statement = translateUnaryStatement ident v l
-    Success (replace "_op_" "add" (line statement)) (context statement)
+    case statement of
+      Error ln c -> Error ln c
+      Success ln c -> Success (replace "_op_" "add" (line statement)) (context statement)
   Decr ident -> do
     let statement = translateUnaryStatement ident v l
-    Success (replace "_op_" "sub" (line statement)) (context statement)
+    case statement of
+      Error ln c -> Error ln c
+      Success ln c -> Success (replace "_op_" "sub" (line statement)) (context statement)
   Ret expr -> do 
     let expression = transExpr expr v l
-    let storeRetVar = "store " ++ (expType . context) expression ++ " " ++ (expVar . context) expression ++ ", " ++ (expType . context) expression ++ "* %1"
-    let retVar = createRetVar
-    Success ("\n" ++ line expression ++ "\n" ++ storeRetVar ++ "\nbr label %return\n") (StmtContext ((usedVars $ context expression) ++ [retVar]))
+    case expression of 
+      Error ln c -> Error ln c
+      Success ln c -> do
+        let storeRetVar = "store " ++ (expType . context) expression ++ " " ++ (expVar . context) expression ++ ", " ++ (expType . context) expression ++ "* %1"
+        let retVar = createRetVar
+        Success ("\n" ++ line expression ++ "\n" ++ storeRetVar ++ "\nbr label %return\n") (StmtContext ((usedVars $ context expression) ++ [retVar]))
   VRet -> Success "br label %return\n" (StmtContext (v ++ [createRetVar]))
   Cond expr stmt -> do
     let expression = transExpr expr v l
-    let newVars = (usedVars . context) expression
-    let breakVar = nextVarName newVars
-    let breakVarNum = nextVarNum newVars
+    case expression of 
+      Error ln c -> Error ln c
+      Success ln c -> do
+        let newVars = (usedVars . context) expression
+        let breakVar = nextVarName newVars
+        let breakVarNum = nextVarNum newVars
 
-    -- increment level and blockCount if stmt is not a block statement
-    let level = if isBlockStatement stmt then l else last $ prevBlocks (getBlockCounter newVars)
-    let updatedVars = if isBlockStatement stmt then newVars else findAndIncrementBlockCounter newVars
-
-    let statement = transStmt stmt (updatedVars ++ [createLabel breakVar]) level
-    let tempRetVars = filter (\x -> varType x /= "ret") (vars (context statement))
-    -- let mustReturn = (length tempRetVars) == length (vars $ context statement)
-    let breakVar2 = nextVarName tempRetVars
-    let breakVar2Num = nextVarNum tempRetVars
-    -- decrement blockCount if stmt is not a block statement
-    let retVars = if isBlockStatement stmt then tempRetVars else findAndDecrementBlockCounter tempRetVars
-    
-    let expLine = (expVar . context) expression
-    let break = "\nbr i1 " ++ expLine ++ ", label " ++ breakVar ++ ", label " ++ breakVar2 ++ "\n;<label>:" ++ breakVarNum
-    Success (line expression ++ break ++ line statement ++ "\n;<label>:" ++ breakVar2Num) (StmtContext (retVars ++ [createLabel breakVar2]))
+        -- increment level and blockCount if stmt is not a block statement
+        let level = if isBlockStatement stmt then l else last $ prevBlocks (getBlockCounter newVars)
+        let updatedVars = if isBlockStatement stmt then newVars else findAndIncrementBlockCounter newVars
+        
+        let statement = transStmt stmt (updatedVars ++ [createLabel breakVar]) level
+        case statement of 
+          Error ln c -> Error ln c
+          Success ln c -> do
+            let tempRetVars = filter (\x -> varType x /= "ret") (vars (context statement))
+            -- let mustReturn = (length tempRetVars) == length (vars $ context statement)
+            let breakVar2 = nextVarName tempRetVars
+            let breakVar2Num = nextVarNum tempRetVars
+            -- decrement blockCount if stmt is not a block statement
+            let retVars = if isBlockStatement stmt then tempRetVars else findAndDecrementBlockCounter tempRetVars
+            
+            let expLine = (expVar . context) expression
+            let break = "\nbr i1 " ++ expLine ++ ", label " ++ breakVar ++ ", label " ++ breakVar2 ++ "\n;<label>:" ++ breakVarNum
+            Success (line expression ++ break ++ line statement ++ "\n;<label>:" ++ breakVar2Num) (StmtContext (retVars ++ [createLabel breakVar2]))
   CondElse expr stmt1 stmt2 -> do
     let expression = transExpr expr v l
     let newVars = (usedVars . context) expression
@@ -380,15 +410,19 @@ transItem v l t x = case x of
     Success ("%" ++ newName ++ " = alloca " ++ t) (ExpContext t id (v ++ [createDeclaredVariableWithAlias t id newName l]))
   Init ident expr -> do 
     let res = transExpr expr v l
-    let id = line $ transIdent ident
-    let exp = line res
-    let ctx = context res
-    let vars = usedVars ctx
-    let newName = nameVariable id v
-    -- type check
-    let def = "%" ++ newName ++ " = alloca " ++ expType ctx
-    let init = "store " ++ expType ctx ++ " " ++ expVar ctx ++ ", " ++ t ++"* %" ++ newName
-    Success (line res ++ def ++ "\n" ++ init) (ExpContext (expType ctx) newName (vars ++ [createDeclaredVariableWithAlias t id newName l]))
+    case res of
+      Error ln c -> Error ln c
+      Success ln c -> if t == expType c then do
+          let id = line $ transIdent ident
+          let exp = line res
+          let ctx = context res
+          let vars = usedVars ctx
+          let newName = nameVariable id v
+          -- type check
+          let def = "%" ++ newName ++ " = alloca " ++ expType ctx
+          let init = "store " ++ expType ctx ++ " " ++ expVar ctx ++ ", " ++ t ++"* %" ++ newName
+          Success (line res ++ def ++ "\n" ++ init) (ExpContext (expType ctx) newName (vars ++ [createDeclaredVariableWithAlias t id newName l]))
+        else Error ("expression of type " ++ expType c ++ " cannot be assigned to " ++ t) None
 transType :: Type -> Result
 transType x = case x of
   Int -> Success "i32" None
@@ -405,6 +439,10 @@ getDeclaredVariable n vars = do
     [] -> EmptyVar
     x -> last x
 
+checkFunctionArgumentTypes :: [String] -> [String] -> Bool
+checkFunctionArgumentTypes [] [] = True
+checkFunctionArgumentTypes (a:ax) (b:bx) = (a == b) && checkFunctionArgumentTypes ax bx
+
 transExpr :: Expr -> [Variable] -> Integer -> Result
 transExpr x v level = case x of
   EVar ident -> do
@@ -413,30 +451,40 @@ transExpr x v level = case x of
     let declaredVar = getDeclaredVariable name v
     let tp = getType v (alias declaredVar)
     let var = nextVarName v
-    Success (var ++ " = load " ++ tp ++ ", " ++ tp ++ "* %" ++ (alias declaredVar)) (ExpContext tp var (v ++ [createVariable tp var level]))
+    Success (var ++ " = load " ++ tp ++ ", " ++ tp ++ "* %" ++ alias declaredVar) (ExpContext tp var (v ++ [createVariable tp var level]))
   ELitInt integer -> Success "" (ExpContext "i32" (show integer) v)
   ELitTrue -> Success "" (ExpContext "i1" "1" v)
   ELitFalse -> Success "" (ExpContext "i1" "0" v)
   EApp ident exprs -> do
     let resultsVariablesTuple = translateExpressions exprs v level
     let results = fst resultsVariablesTuple
-    let variables = snd resultsVariablesTuple
-    let mapedArguments = map (\x -> expType (context x) ++ " " ++ expVar (context x)) results
-    let arguments = concatWithSeparator mapedArguments ","
-    let lines = map line results
-    let expLines = concatWithSeparator lines "\n"
-    let id = transIdent ident
-    let retVar = nextVarName variables
-    let funcType = getFuncType (getFuncVariable variables (line id))
-    let returnType = head funcType
-    case returnType of
-      "void" -> do
-        let callLine = expLines ++ "\n" ++ "call " ++ returnType ++ " @" ++ line id ++ "(" ++ arguments ++ ")"
-        Success callLine (ExpContext returnType retVar variables)
+    case results of
+      [Error ln c] -> Error ln c
       _ -> do
-        let callLine = expLines ++ "\n" ++ retVar ++ " = call " ++ returnType ++ " @" ++ line id ++ "(" ++ arguments ++ ")"
-        let usedVars = variables ++ [createVariable returnType retVar level]
-        Success callLine (ExpContext returnType retVar usedVars)
+        let variables = snd resultsVariablesTuple
+        let mapedArguments = map (\x -> expType (context x) ++ " " ++ expVar (context x)) results
+        let arguments = concatWithSeparator mapedArguments ","
+        let lines = map line results
+        let expLines = concatWithSeparator lines "\n"
+        let id = transIdent ident
+        let retVar = nextVarName variables
+        let funcType = getFuncType (getFuncVariable variables (line id))
+        let returnType = head funcType
+
+        let funcArgTypes = tail funcType
+        let passedArgTypes = map (\x -> expType (context x)) results
+
+        let isCorrectCall = if length funcArgTypes == length passedArgTypes then checkFunctionArgumentTypes funcArgTypes passedArgTypes else False
+        if isCorrectCall then
+          case returnType of
+            "void" -> do
+              let callLine = expLines ++ "\n" ++ "call " ++ returnType ++ " @" ++ line id ++ "(" ++ arguments ++ ")"
+              Success callLine (ExpContext returnType retVar variables)
+            _ -> do
+              let callLine = expLines ++ "\n" ++ retVar ++ " = call " ++ returnType ++ " @" ++ line id ++ "(" ++ arguments ++ ")"
+              let usedVars = variables ++ [createVariable returnType retVar level]
+              Success callLine (ExpContext returnType retVar usedVars)
+          else Error ("Argument mismatch in function call " ++ line id) None
   EString string -> do
     let stringCount = show $ length (filter (\x -> varType x == "i8") v)
     let globalVar = Variable "i8" string ("@s_" ++ stringCount) False 0 False False
@@ -445,91 +493,151 @@ transExpr x v level = case x of
     Success line (ExpContext "i8*" name (v ++ [globalVar, createVariable "i8*" name level]))
   Neg expr -> do 
     let expression = transExpr expr v level
-    let expressionVar = expVar (context expression)
-    let expVars = usedVars (context expression)
-    let negVar = nextVarName expVars
-    let negative = negVar ++ " = mul i32 -1, " ++ expressionVar
-    Success (line expression ++ "\n" ++ negative) (ExpContext "i32" negVar (expVars ++ [createVariable "i32" negVar level]))
+    case expression of 
+      Error ln c -> Error ln c
+      Success ln c -> do
+        let expressionVar = expVar c
+        case expType c of
+          "i32" -> do 
+            let expVars = usedVars c
+            let negVar = nextVarName expVars
+            let negative = negVar ++ " = mul i32 -1, " ++ expressionVar
+            Success (line expression ++ "\n" ++ negative) (ExpContext "i32" negVar (expVars ++ [createVariable "i32" negVar level]))
+          other -> Error ("cannot negate variable of type " ++ other) None
   Not expr -> do 
     let expression = transExpr expr v level
-    let ctx = context expression
-    let var = nextVarName $ usedVars ctx
-    let retLine = var ++ " = xor i1 " ++ expVar ctx ++ ", 1\n"
-    Success (line expression ++ "\n" ++ retLine) (ExpContext "i1" var (usedVars ctx ++ [createVariable "i1" var level]))
+    case expression of 
+      Error ln c -> Error ln c
+      Success ln ctx -> do
+        let var = nextVarName $ usedVars ctx
+        let retLine = var ++ " = xor i1 " ++ expVar ctx ++ ", 1\n"
+        case expType ctx of
+          "i1" -> Success (line expression ++ "\n" ++ retLine) (ExpContext "i1" var (usedVars ctx ++ [createVariable "i1" var level]))
+          other -> Error ("logical negation cannot be applied to variable of type " ++ other) None
   EMul expr1 mulop expr2 -> do
     let translated = translateBinaryExpression expr1 expr2 v level
-    Success (replace "_op_" (line $ transMulOp mulop) (line translated)) (context translated)
+    case translated of 
+      Error ln c -> Error (replace "_op_" (line $ transMulOp mulop) ln) None
+      Success ln c -> Success (replace "_op_" (line $ transMulOp mulop) ln) c
   EAdd expr1 addop expr2 -> do
     let translated = translateBinaryExpression expr1 expr2 v level
-    Success (replace "_op_" (line $ transAddOp addop) (line translated)) (context translated)
+    case translated of 
+      Error ln c -> Error (replace "_op_" (line $ transAddOp addop) ln) None
+      Success ln c -> Success (replace "_op_" (line $ transAddOp addop) ln) c
   ERel expr1 relop expr2 -> do
     let l = transExpr expr1 v level
-    let lExpVar = expVar (context l)
-    let o = transRelOp relop
-    let newV = usedVars (context l)
-    let r = transExpr expr2 newV level
-    let vars = usedVars (context r)
-    if expType (context l) == expType (context r) then do
-      let var = nextVarName vars
-      let newVar = createVariable "i1" var level
-      let ctx = ExpContext "i1" var (vars ++ [newVar])
-      let res = var ++ " = icmp " ++ line o ++ " " ++ expType (context l) ++ " " ++ lExpVar ++ ", " ++ expVar (context r)
-      Success (line l ++ "\n" ++ line r ++ "\n" ++ res) ctx
-    else failure "type mismatch"
+    case l of
+      Error ln c -> Error ln c
+      Success ln c -> do
+        let lExpVar = expVar (context l)
+        let o = transRelOp relop
+        let newV = usedVars (context l)
+        let r = transExpr expr2 newV level
+        case r of
+          Error ln c -> Error ln c
+          Success ln c -> do
+            let vars = usedVars (context r)
+            if expType (context l) == expType (context r) then
+              case expType (context l) of
+                "i1" -> do
+                  let var = nextVarName vars
+                  let newVar = createVariable "i1" var level
+                  let ctx = ExpContext "i1" var (vars ++ [newVar])
+                  let res = var ++ " = icmp " ++ line o ++ " " ++ expType (context l) ++ " " ++ lExpVar ++ ", " ++ expVar (context r)
+                  Success (line l ++ "\n" ++ line r ++ "\n" ++ res) ctx
+                "i32" -> do
+                  let var = nextVarName vars
+                  let newVar = createVariable "i1" var level
+                  let ctx = ExpContext "i1" var (vars ++ [newVar])
+                  let res = var ++ " = icmp " ++ line o ++ " " ++ expType (context l) ++ " " ++ lExpVar ++ ", " ++ expVar (context r)
+                  Success (line l ++ "\n" ++ line r ++ "\n" ++ res) ctx
+                tp -> Error ("relational operator " ++ line o ++ " cannot be applied to type " ++ tp) None
+            else Error ("type mismatch in relational operator " ++ line o) None
   EAnd expr1 expr2 -> do
     let translated = translateBooleanExpression expr1 expr2 v level
-    Success (replace "_op_" "and" (line translated)) (context translated)
+    case translated of 
+      Error ln c -> Error (replace "_op_" "and" ln) None
+      Success ln c -> Success (replace "_op_" "and" ln) c
   EOr expr1 expr2 -> do
     let translated = translateBooleanExpression expr1 expr2 v level
-    Success (replace "_op_" "or" (line translated)) (context translated)
+    case translated of 
+      Error ln c -> Error (replace "_op_" "or" ln) None
+      Success ln c -> Success (replace "_op_" "or" ln) c
 
 
 translateUnaryStatement :: Ident -> [Variable] -> Integer -> Result
 translateUnaryStatement ident v l = do 
   let id = line $ transIdent ident
   let declaredVar = getDeclaredVariable id v
-  let tp = getType v (alias declaredVar)
-  let var = nextVarName v
-  let newVars = v ++ [createVariable "i32" var l]
-  let load = var ++ " = load i32, " ++ tp ++ "* %" ++ alias declaredVar ++ "\n"
-  let incVar = nextVarName newVars
-  let increment = incVar ++ " = _op_ i32 " ++ var ++ ", 1\n"
-  let res = "store i32 " ++ incVar ++ ", i32* %" ++ alias declaredVar
-  let retVars = newVars ++ [createVariable "i32" incVar l]
-  Success (load ++ increment ++ res) (StmtContext retVars)
+  case declaredVar of 
+    EmptyVar -> Error ("variable not declared " ++ id) None
+    _ -> do
+      let tp = getType v (alias declaredVar)
+      case tp of 
+        "i32" -> do
+          let var = nextVarName v
+          let newVars = v ++ [createVariable "i32" var l]
+          let load = var ++ " = load i32, " ++ tp ++ "* %" ++ alias declaredVar ++ "\n"
+          let incVar = nextVarName newVars
+          let increment = incVar ++ " = _op_ i32 " ++ var ++ ", 1\n"
+          let res = "store i32 " ++ incVar ++ ", i32* %" ++ alias declaredVar
+          let retVars = newVars ++ [createVariable "i32" incVar l]
+          Success (load ++ increment ++ res) (StmtContext retVars)
+        _-> Error "unary operators can be applied only to integer" None
 
 translateBinaryExpression :: Expr -> Expr -> [Variable] -> Integer -> Result
 translateBinaryExpression expr1 expr2 v level = do
   let l = transExpr expr1 v level
-  let lvars = usedVars (context l)
-  let lvar = createVariable (expType $ context l) (expVar $ context l) level
-  let r = transExpr expr2 lvars level
-  let rvars = usedVars (context r)
-  let rvar = createVariable (expType $ context r) (expVar $ context r) level
+  case l of
+    Error ln c -> Error ln c
+    Success ln c -> do
+      let lvars = usedVars (context l)
+      let lvar = createVariable (expType $ context l) (expVar $ context l) level
+      let r = transExpr expr2 lvars level
+      case r of
+        Error ln c -> Error ln c
+        Success ln c -> do
+          let rvars = usedVars (context r)
+          let rvar = createVariable (expType $ context r) (expVar $ context r) level
 
-  if areSameType lvar rvar then do
-    let opVarName = nextVarName rvars
-    let res = if varType lvar /= "i8*" then opVarName ++ " = _op_ " ++ varType lvar ++ " " ++ alias lvar ++ ", " ++ alias rvar
-        else opVarName ++ " = call i8* @concat(i8* " ++ alias lvar ++ ", i8* " ++ alias rvar ++ ")"
-    let retVars = rvars ++ [createVariable (varType lvar) opVarName level]
-    let ctx = ExpContext (varType lvar) opVarName retVars
-    Success (line l ++ "\n" ++ line r ++ "\n" ++ res ++ "\n") ctx
-  else failure "type mismatch"
+          if areSameType lvar rvar then do
+            let opVarName = nextVarName rvars
+            case varType lvar of
+              "i8*" -> do
+                let res = opVarName ++ " = call i8* @concat(i8* " ++ alias lvar ++ ", i8* " ++ alias rvar ++ ")"
+                let retVars = rvars ++ [createVariable (varType lvar) opVarName level]
+                let ctx = ExpContext (varType lvar) opVarName retVars
+                Success (line l ++ "\n" ++ line r ++ "\n" ++ res ++ "\n") ctx
+              "i32" -> do
+                let res = opVarName ++ " = _op_ " ++ varType lvar ++ " " ++ alias lvar ++ ", " ++ alias rvar
+                let retVars = rvars ++ [createVariable (varType lvar) opVarName level]
+                let ctx = ExpContext (varType lvar) opVarName retVars
+                Success (line l ++ "\n" ++ line r ++ "\n" ++ res ++ "\n") ctx
+              _ -> Error ("binary operator _op_ cannot be applied to operands of type " ++ varType lvar) None
+          else Error "operands of binary operator _op_ have different types" None
 
 translateBooleanExpression :: Expr -> Expr -> [Variable] -> Integer -> Result
 translateBooleanExpression expr1 expr2 v level = do
   let l = transExpr expr1 v level
-  let lvars = usedVars (context l)
-  let lvar = expVar (context l)
-  let r = transExpr expr2 lvars level
-  let rvars = usedVars (context r)
-  let rvar = expVar (context r)
-  let orVar = nextVarName rvars
-  let res = orVar ++ " = _op_ i1 " ++ lvar ++ ", " ++ rvar
-  let retVars = rvars ++ [createVariable "i1" orVar level]
-  let ctx = ExpContext "i1" orVar retVars
-  Success (line l ++ "\n" ++ line r ++ "\n" ++ res) ctx
-
+  case l of
+    Error ln c -> Error ln c
+    Success ln c -> do
+      let lvars = usedVars (context l)
+      let lvar = createVariable (expType $ context l) (expVar $ context l) level
+      let r = transExpr expr2 lvars level
+      case r of 
+        Error ln c -> Error ln c
+        Success ln c -> do
+          let rvars = usedVars (context r)
+          let rvar = createVariable (expType $ context r) (expVar $ context r) level
+          if (areSameType lvar rvar) && (varType lvar == "i1") then do
+            let orVar = nextVarName rvars
+            let res = orVar ++ " = _op_ i1 " ++ alias lvar ++ ", " ++ alias rvar
+            let retVars = rvars ++ [createVariable "i1" orVar level]
+            let ctx = ExpContext "i1" orVar retVars
+            Success (line l ++ "\n" ++ line r ++ "\n" ++ res) ctx
+          else Error "Boolean operator _op_ can be applied only to boolean variables" None
+          
 transAddOp :: AddOp -> Result
 transAddOp x = case x of
   Plus -> Success "add" None
