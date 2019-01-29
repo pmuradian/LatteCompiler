@@ -42,11 +42,11 @@ runFile v p f = do
   let name = takeBaseName f
   putStrLn "" >> readFile f >>= run v p path name
   -- for macOS path to LLVM
-  let llvm_as = "/usr/local/opt/llvm/bin/llvm-as -o "
-  let llvm_link = "/usr/local/opt/llvm/bin/llvm-link -o "
+  -- let llvm_as = "/usr/local/opt/llvm/bin/llvm-as -o "
+  -- let llvm_link = "/usr/local/opt/llvm/bin/llvm-link -o "
   -- Linux path to LLVM
-  -- let llvm_as = "llvm-as -o "
-  -- let llvm_link = "llvm-link -o "
+  let llvm_as = "llvm-as -o "
+  let llvm_link = "llvm-link -o "
   let first = llvm_as ++ path ++ name ++ "-out.bc " ++ path ++ name ++ ".ll" ++ " && "
   let second = llvm_link ++ path ++ name ++ ".bc " ++ path ++ name ++ "-out.bc ./res/runtime.bc ./res/concat.bc" ++ " && "
   let third = "rm " ++ path ++ name ++ "-out.bc"
