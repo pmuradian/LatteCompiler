@@ -479,10 +479,10 @@ nameVariable s vars = case last $ prevBlocks (getBlockCounter vars) of
 
 getInitLine :: String -> String -> String
 getInitLine t n = case t of
-  "i32" -> "%" ++ n ++ " = alloca " ++ t ++ "\nstore i32 0, i32* %" ++ n
-  "i1" -> "%" ++ n ++ " = alloca " ++ t ++ "\nstore i1 0, i1* %" ++ n
-  "i8*" -> "%" ++ n ++ " = bitcast [1 x i8]* @s- to i8*"
-  other -> ""
+  "i32" -> "\n%" ++ n ++ " = alloca " ++ t ++ "\nstore i32 0, i32* %" ++ n
+  "i1" -> "\n%" ++ n ++ " = alloca " ++ t ++ "\nstore i1 0, i1* %" ++ n
+  "i8*" -> "\n%" ++ n ++ " = bitcast [1 x i8]* @s- to i8*"
+  other -> "\n"
 
 
 transItem :: [Variable] -> Integer -> String -> Item -> Result
@@ -509,7 +509,7 @@ transItem v l t x = case x of
             EmptyVar -> if expType c == t then do
                 let def = "%" ++ newName ++ " = alloca " ++ expType ctx
                 let init = "store " ++ expType ctx ++ " " ++ expVar ctx ++ ", " ++ t ++"* %" ++ newName
-                Success (line res ++ def ++ "\n" ++ init) (ExpContext (expType ctx) newName (vars ++ [declaredVar]))
+                Success (line res ++ "\n" ++ def ++ "\n" ++ init) (ExpContext (expType ctx) newName (vars ++ [declaredVar]))
               else Error ("cannot assign " ++ getOriginalType (expType c) ++ " to variable of type " ++ getOriginalType t) None
             other -> Error ("duplicate definition of variable " ++ newName) None
         else Error ("expression of type " ++ getOriginalType (expType c) ++ " cannot be assigned to " ++ getOriginalType t) None
