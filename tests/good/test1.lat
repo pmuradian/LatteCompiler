@@ -1,0 +1,19 @@
+int someFunction(int a, string b) {
+	a=12;
+	int k;
+	int j=0+k;
+	if(j==0) {
+		return 1;
+	}
+	if(1==a) {
+		return 1;
+	}
+	while(j<12){
+		j++;
+	}
+	j=k+j-6;
+	j=-9;
+	k=-k;
+	printInt(k);
+	return k;
+}
