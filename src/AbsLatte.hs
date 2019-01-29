@@ -7,6 +7,7 @@ module AbsLatte where
 -- Custom Data types
 data Variable = Variable {varType :: String, name :: String, alias :: String, isFunc :: Bool, level :: Integer, isUsed :: Bool, isGenerated :: Bool}
                 | BlockCounter {varType :: String, name :: String, alias :: String, isFunc :: Bool, level :: Integer, isUsed :: Bool, isGenerated :: Bool, count :: Integer, prevBlocks :: [Integer]}
+                | FuncVariable {varType :: String, name :: String, alias :: String, isFunc :: Bool, level :: Integer, isUsed :: Bool, isGenerated :: Bool, isCurrent :: Bool}
                 | EmptyVar
   deriving (Eq, Ord, Show, Read)
 
@@ -18,6 +19,7 @@ data Context
     | BlockContext {vars :: [Variable]}
     | StmtContext {vars :: [Variable]}
     | ExpContext {expType :: String, expVar :: String, usedVars :: [Variable]}
+    | OperatorContext {original :: String}
   deriving (Eq, Ord, Show, Read)
 data Result 
     = Success {line :: String, context :: Context}
