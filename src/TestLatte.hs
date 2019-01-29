@@ -64,7 +64,7 @@ run v p path name s = let ts = myLLexer s in case p ts of
                           case compileProgram pr of
                             Success l c -> do
                               let result = availableFunctions ++ l
-                              putStrLn ("OK\n" ++ result)
+                              putStrLn "OK\n"
                               writeFile (path ++ name ++ ".ll") result
                             Error l c -> do
                               putStrLn ("ERROR\n" ++ l)

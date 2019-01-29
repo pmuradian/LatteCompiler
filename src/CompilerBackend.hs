@@ -163,8 +163,8 @@ getAvailableFunctions :: [Variable]
 getAvailableFunctions = [createFunction "void i32" "printInt",
                           createFunction "void i8*" "printString",
                           createFunction "void" "error",
-                          createFunction "i32 i32" "readInt",
-                          createFunction "i8* i8*" "readString"]
+                          createFunction "i32" "readInt",
+                          createFunction "i8*" "readString"]
 
 transFunc :: TopDef -> Variable
 transFunc x = case x of 
@@ -225,7 +225,7 @@ transTopDef v x = case x of
                 let constantStrings = filter (\x -> varType x == "i8") (vars $ context blockResult)
                 let retVarType = line ftype
                 let allocAndStoreArguments = "\n" ++ "%1 = alloca " ++ retVarType ++ "\n" ++ concatWithSeparator allocArguments "\n" ++ "\n" ++ concatWithSeparator storeArguments "\n"
-                let finalVar = nextVarName (vars $ context blockResult)
+                let finalVar = "%r-"
                 let loadReturnVar = finalVar ++ " = load " ++ line ftype ++ ", " ++ line ftype ++ "* %1\n"
                 let returnLine = "\nbr label %return\nreturn:\n" ++ loadReturnVar ++ "\nret " ++ line ftype ++ " " ++ finalVar
                 let result = createFunctionDefinition (line ftype) fName argumentsLine (allocAndStoreArguments ++ blockLine) returnLine
@@ -271,7 +271,7 @@ translateStatements (x:xs) v l = do
       let res = translateStatements xs updatedVars l
       let f = fst res
       case f of
-        [Error a b] -> ([Error a b], v)
+        [Error a b] -> ([Error a b], updatedVars)
         other -> (result : f, snd res)
 translateStatements [] v l = ([], v)
 
@@ -305,7 +305,7 @@ isBlockStatement stmt = case stmt of
   _ -> False
 
 createRetVar :: Variable
-createRetVar = createVariable "ret" "ret" 1
+createRetVar = Variable "ret" "ret" "ret" False 1 False True
 
 transStmt :: Stmt -> [Variable] -> Integer -> Result
 transStmt x v l = case x of
@@ -385,7 +385,6 @@ transStmt x v l = case x of
               Error ln c -> Error ln c
               Success ln c -> do
                 let tempRetVars = filter (\x -> varType x /= "ret") (vars (context statement))
-                -- let mustReturn = (length tempRetVars) == length (vars $ context statement)
                 let breakVar2 = nextVarName tempRetVars
                 let breakVar2Num = nextVarNum tempRetVars
                 -- decrement blockCount if stmt is not a block statement
