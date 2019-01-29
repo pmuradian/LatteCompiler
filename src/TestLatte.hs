@@ -48,7 +48,7 @@ runFile v p f = do
   -- let llvm_as = "llvm-as -o "
   -- let llvm_link = "llvm-link -o "
   let first = llvm_as ++ path ++ name ++ "-out.bc " ++ path ++ name ++ ".ll" ++ " && "
-  let second = llvm_link ++ path ++ name ++ ".bc " ++ path ++ name ++ "-out.bc /Users/azazel/Documents/Projects/MIMUW/LatteCompiler/Latte/res/runtime.bc /Users/azazel/Documents/Projects/MIMUW/LatteCompiler/Latte/res/concat.bc" ++ " && "
+  let second = llvm_link ++ path ++ name ++ ".bc " ++ path ++ name ++ "-out.bc ./res/runtime.bc ./res/concat.bc" ++ " && "
   let third = "rm " ++ path ++ name ++ "-out.bc"
   runCommand (first ++ second ++ third)
   putStrLn (".ll and  .bc output files created in directory" ++ path ++ "\n")
