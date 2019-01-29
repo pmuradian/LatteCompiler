@@ -211,26 +211,26 @@ transTopDef v x = case x of
           
             let hasReturnStatement = length (filter (\x -> varType x == "ret") (vars c))
           
-            if line ftype == "void" then do
-              let blockLine = line blockResult
-              let constantStrings = filter (\x -> varType x == "i8") (vars $ context blockResult)
-              let allocAndStoreArguments = "\n" ++ concatWithSeparator allocArguments "\n" ++ "\n" ++ concatWithSeparator storeArguments "\n"
-              let returnLine = "\nbr label %return\nreturn:" ++ "\nret void"
-              let result = createFunctionDefinition (line ftype) fName argumentsLine (allocAndStoreArguments ++ blockLine) returnLine
-              Success result (StmtContext constantStrings)
-            
-            else
-              if hasReturnStatement /= 0 then do
+            case line ftype of
+              "void" -> do
                 let blockLine = line blockResult
                 let constantStrings = filter (\x -> varType x == "i8") (vars $ context blockResult)
-                let retVarType = line ftype
-                let allocAndStoreArguments = "\n" ++ "%1 = alloca " ++ retVarType ++ "\n" ++ concatWithSeparator allocArguments "\n" ++ "\n" ++ concatWithSeparator storeArguments "\n"
-                let finalVar = "%r-"
-                let loadReturnVar = finalVar ++ " = load " ++ line ftype ++ ", " ++ line ftype ++ "* %1\n"
-                let returnLine = "\nbr label %return\nreturn:\n" ++ loadReturnVar ++ "\nret " ++ line ftype ++ " " ++ finalVar
+                let allocAndStoreArguments = "\n" ++ concatWithSeparator allocArguments "\n" ++ "\n" ++ concatWithSeparator storeArguments "\n"
+                let returnLine = "\nbr label %return\nreturn:" ++ "\nret void"
                 let result = createFunctionDefinition (line ftype) fName argumentsLine (allocAndStoreArguments ++ blockLine) returnLine
                 Success result (StmtContext constantStrings)
-              else Error ("Missing return statement in function: " ++ fName) None
+              other -> case hasReturnStatement of
+                0 -> Error ("Missing return statement in function " ++ fName) None
+                other -> do
+                  let blockLine = line blockResult
+                  let constantStrings = filter (\x -> varType x == "i8") (vars $ context blockResult)
+                  let retVarType = line ftype
+                  let allocAndStoreArguments = "\n" ++ "%1 = alloca " ++ retVarType ++ "\n" ++ concatWithSeparator allocArguments "\n" ++ "\n" ++ concatWithSeparator storeArguments "\n"
+                  let finalVar = "%r-"
+                  let loadReturnVar = finalVar ++ " = load " ++ line ftype ++ ", " ++ line ftype ++ "* %1\n"
+                  let returnLine = "\nbr label %return\nreturn:\n" ++ loadReturnVar ++ "\nret " ++ line ftype ++ " " ++ finalVar
+                  let result = createFunctionDefinition (line ftype) fName argumentsLine (allocAndStoreArguments ++ blockLine) returnLine
+                  Success result (StmtContext constantStrings)
       other -> Error ("Duplicate definition of " ++ name other ++ " in function " ++ fName) None
 
 transArg :: Arg -> Result
@@ -368,7 +368,7 @@ transStmt x v l = case x of
     case expression of 
       Error ln c -> Error ln c
       Success ln c -> do
-        let newVars = (usedVars . context) expression
+        let newVars = usedVars $ context expression
         let breakVar = nextVarName newVars
         let breakVarNum = nextVarNum newVars
 
@@ -388,7 +388,7 @@ transStmt x v l = case x of
                 let breakVar2 = nextVarName tempRetVars
                 let breakVar2Num = nextVarNum tempRetVars
                 -- decrement blockCount if stmt is not a block statement
-                let retVars = if isBlockStatement stmt then tempRetVars else findAndDecrementBlockCounter tempRetVars
+                let retVars = if isBlockStatement stmt then vars c else findAndDecrementBlockCounter tempRetVars
                 
                 let expLine = (expVar . context) expression
                 let break = "\nbr i1 " ++ expLine ++ ", label " ++ breakVar ++ ", label " ++ breakVar2 ++ "\n;<label>:" ++ breakVarNum
