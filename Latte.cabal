@@ -1,0 +1,74 @@
+-- This file has been generated from package.yaml by hpack version 0.20.0.
+--
+-- see: https://github.com/sol/hpack
+--
+-- hash: 781589b9bc2187cf5552c626f5819aba5047c9c72e447de152edd7b6d91a41ea
+
+name:           Latte
+version:        0.1.0.0
+description:    Please see the README on GitHub at <https://github.com/githubuser/Latte#readme>
+homepage:       https://github.com/githubuser/Latte#readme
+bug-reports:    https://github.com/githubuser/Latte/issues
+author:         Author name here
+maintainer:     example@example.com
+copyright:      2018 Author name here
+license:        BSD3
+license-file:   LICENSE
+build-type:     Simple
+cabal-version:  >= 1.10
+
+extra-source-files:
+    ChangeLog.md
+    README.md
+
+source-repository head
+  type: git
+  location: https://github.com/githubuser/Latte
+
+library
+  hs-source-dirs:
+      src
+  build-depends:
+      base >=4.7 && <5
+  exposed-modules:
+      AbsLatte
+      Compiler
+      CompilerBackend
+      CompilerFrontend
+      ErrM
+      LexLatte
+      LexLatte
+      Lib
+      ParLatte
+      ParLatte
+      PrintLatte
+      SkelLatte
+      TestLatte
+  other-modules:
+      Paths_Latte
+  default-language: Haskell2010
+
+executable Latte-exe
+  main-is: Main.hs
+  hs-source-dirs:
+      app
+  ghc-options: -threaded -rtsopts -with-rtsopts=-N
+  build-depends:
+      Latte
+    , base >=4.7 && <5
+  other-modules:
+      Paths_Latte
+  default-language: Haskell2010
+
+test-suite Latte-test
+  type: exitcode-stdio-1.0
+  main-is: Spec.hs
+  hs-source-dirs:
+      test
+  ghc-options: -threaded -rtsopts -with-rtsopts=-N
+  build-depends:
+      Latte
+    , base >=4.7 && <5
+  other-modules:
+      Paths_Latte
+  default-language: Haskell2010

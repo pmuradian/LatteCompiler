@@ -10,7 +10,7 @@ compile:
 	ghc --make -isrc ./src/TestLatte.hs -o latc_llvm
 
 clean:
-	-rm -f *.log *.aux *.hi *.o *.dvi *.bak
+	-rm -f ./src/*.log ./src/*.aux ./src/*.hi ./src/*.o ./src/*.dvi ./src/*.bak
 
 distclean: clean
 	-rm -f src/DocLatte.* src/LexLatte.* src/ParLatte.* src/LayoutLatte.* src/SkelLatte.* src/PrintLatte.* src/TestLatte.* src/AbsLatte.* src/TestLatte src/ErrM.* src/SharedString.* src/ComposOp.* src/latte.dtd src/XMLLatte.* Makefile*

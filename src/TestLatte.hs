@@ -55,7 +55,7 @@ runFile v p f = do
 
 run :: (Print a, Show a) => Verbosity -> ParseFun a -> String -> String -> String -> IO ()
 run v p path name s = let ts = myLLexer s in case p ts of
-           Bad s    -> do putStrLn "\nERROR:\n"
+           Bad s    -> do putStrLn "\nERROR"
                           putStrLn s
                           exitSuccess
            Ok  tree -> do putStrLn "\n"
