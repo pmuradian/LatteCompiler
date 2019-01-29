@@ -11,5 +11,5 @@
     To run the project use Makefile commands
     'make' command will install Haskell packages used in the project using 'cabal install', compile source files and output latc_llvm executable
     'make compile' will only compile sources without installing packages
-    'make testGood' will run latc_llvm with all good test files and output .ll and .bc files
+    'make testGood' will run latc_llvm with all good test files and output .ll and .bc files (test core018.lat will pass but .ll file will not compile as readString function is missing from runtime.bc)
     'make testBad' will run latc_llvm with all bad test files and print the error message
