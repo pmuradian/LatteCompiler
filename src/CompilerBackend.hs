@@ -333,7 +333,7 @@ transStmt x v l = case x of
               let result = line e ++ "\nstore " ++ expType e_ctx ++ " " ++ expVar e_ctx ++ ", " ++ vType ++ "* %" ++ alias declaredVar
               let newVars = usedVars e_ctx
               Success result (StmtContext newVars)
-            else Error ("expression of type " ++ expType e_ctx ++ " cannot be assigned to " ++ vType) None
+            else Error ("expression of type " ++ getOriginalType (expType e_ctx) ++ " cannot be assigned to " ++ getOriginalType vType) None
   Incr ident -> do 
     let statement = translateUnaryStatement ident v l
     case statement of
@@ -652,12 +652,12 @@ transExpr x v level = case x of
                 tp -> Error ("relational operator " ++ original (context o) ++ " cannot be applied to type " ++ getOriginalType tp) None
             else Error ("type mismatch in relational operator " ++ original (context o)) None
   EAnd expr1 expr2 -> do
-    let translated = translateBooleanExpression expr1 expr2 v level
+    let translated = translateBooleanExpression expr1 expr2 "and" v level
     case translated of 
       Error ln c -> Error (replace "_op_" "&&" ln) None
       Success ln c -> Success (replace "_op_" "and" ln) c
   EOr expr1 expr2 -> do
-    let translated = translateBooleanExpression expr1 expr2 v level
+    let translated = translateBooleanExpression expr1 expr2 "or" v level
     case translated of 
       Error ln c -> Error (replace "_op_" "||" ln) None
       Success ln c -> Success (replace "_op_" "or" ln) c
@@ -714,28 +714,81 @@ translateBinaryExpression expr1 expr2 v level = do
               _ -> Error ("binary operator _op_ cannot be applied to operands of type " ++ getOriginalType (varType lvar)) None
           else Error "operands of binary operator _op_ have different types" None
 
-translateBooleanExpression :: Expr -> Expr -> [Variable] -> Integer -> Result
-translateBooleanExpression expr1 expr2 v level = do
+translateBooleanExpression :: Expr -> Expr -> String -> [Variable] -> Integer -> Result
+translateBooleanExpression expr1 expr2 op v level = do
   let l = transExpr expr1 v level
   case l of
     Error ln c -> Error ln c
     Success ln c -> do
       let lvars = usedVars (context l)
       let lvar = createVariable (expType $ context l) (expVar $ context l) level
-      let r = transExpr expr2 lvars level
-      case r of 
-        Error ln c -> Error ln c
-        Success ln c -> do
-          let rvars = usedVars (context r)
-          let rvar = createVariable (expType $ context r) (expVar $ context r) level
-          if (areSameType lvar rvar) && (varType lvar == "i1") then do
-            let orVar = nextVarName rvars
-            let res = orVar ++ " = _op_ i1 " ++ alias lvar ++ ", " ++ alias rvar
-            let retVars = rvars ++ [createVariable "i1" orVar level]
-            let ctx = ExpContext "i1" orVar retVars
-            Success (line l ++ "\n" ++ line r ++ "\n" ++ res) ctx
-          else Error "Boolean operator _op_ can be applied only to boolean variables" None
-          
+      let exp1Var = expVar c
+      let exp1Type = expType c
+      let cmpVarName = nextVarName lvars
+      let currentLabel = getCurrentLabel lvars
+      let updatedVars = lvars ++ [createVariable "i1" cmpVarName level]
+      let compare = cmpVarName ++ " = icmp eq i1 " ++ exp1Var ++ ", 0\n"
+      case op of
+        "and" -> do
+          let breakVar = nextVarName updatedVars
+          let breakVarNum = nextVarNum updatedVars
+          let break = "br i1 " ++ cmpVarName ++ ", label l-" ++ ", label " ++ breakVar ++ "\n"
+          let label = ";<label>:" ++ breakVarNum ++ "\n"
+          let updatedWithBreakVars = updatedVars ++ [createLabel breakVar]
+          let r = transExpr expr2 updatedWithBreakVars level
+          case r of 
+            Error ln c -> Error ln c
+            Success ln c -> do
+              let rvars = usedVars (context r)
+              let rvar = createVariable (expType $ context r) (expVar $ context r) level
+              if (areSameType lvar rvar) && (varType lvar == "i1") then do
+                let orVar = nextVarName rvars
+                let res = orVar ++ " = _op_ i1 " ++ alias lvar ++ ", " ++ alias rvar
+                let retVars = rvars ++ [createVariable "i1" orVar level]
+                let phiBreak = nextVarName retVars
+                let phiLabel = nextVarNum retVars
+                let phiBreakLine = "br label " ++ phiBreak ++ "\n" ++ ";<label>:" ++ phiLabel ++ "\n"
+                let retVarsWithPhi = retVars ++ [createLabel phiBreak]
+                let phiVar = nextVarName retVarsWithPhi
+                let phiLine = phiVar ++ " = phi i1 [0, " ++ currentLabel ++ "], [" ++ orVar ++ ", " ++ getCurrentLabel retVars ++ "]"
+                let ctx = ExpContext "i1" phiVar (retVarsWithPhi ++ [createVariable "i1" phiVar level])
+                Success (line l ++ "\n" ++ compare ++ (replace "l-" phiBreak break) ++ label ++ line r ++ "\n" ++ res ++ "\n" ++ phiBreakLine ++ phiLine) ctx
+              else Error "Boolean operator _op_ can be applied only to boolean variables" None
+        "or" -> do
+          let breakVar = nextVarName updatedVars
+          let breakVarNum = nextVarNum updatedVars
+          let break = "br i1 " ++ cmpVarName ++ ", label " ++ breakVar ++ ", label l-\n"
+          let label = ";<label>:" ++ breakVarNum ++ "\n"
+          let updatedWithBreakVars = updatedVars ++ [createLabel breakVar]
+          let r = transExpr expr2 updatedWithBreakVars level
+          case r of 
+            Error ln c -> Error ln c
+            Success ln c -> do
+              let rvars = usedVars (context r)
+              let rvar = createVariable (expType $ context r) (expVar $ context r) level
+              if (areSameType lvar rvar) && (varType lvar == "i1") then do
+                let orVar = nextVarName rvars
+                let res = orVar ++ " = _op_ i1 " ++ alias lvar ++ ", " ++ alias rvar
+                let retVars = rvars ++ [createVariable "i1" orVar level]
+                let phiBreak = nextVarName retVars
+                let phiLabel = nextVarNum retVars
+                let phiBreakLine = "br label " ++ phiBreak ++ "\n" ++ ";<label>:" ++ phiLabel ++ "\n"
+                let retVarsWithPhi = retVars ++ [createLabel phiBreak]
+                let phiVar = nextVarName retVarsWithPhi
+                let phiLine = phiVar ++ " = phi i1 [1, " ++ currentLabel ++ "], [" ++ orVar ++ ", " ++ (getCurrentLabel retVars) ++ "]"
+                let ctx = ExpContext "i1" phiVar (retVarsWithPhi ++ [createVariable "i1" phiVar level])
+                Success (line l ++ "\n" ++ compare ++ (replace "l-" phiBreak break) ++ label ++ line r ++ "\n" ++ res ++ "\n" ++ phiBreakLine ++ phiLine) ctx
+              else Error "Boolean operator _op_ can be applied only to boolean variables" None
+
+getLastLabel :: [Variable] -> String
+getLastLabel [] = "%0"
+getLastLabel x = if varType (head x) == "label" 
+  then name (head x)
+  else getLastLabel (tail x)
+
+getCurrentLabel :: [Variable] -> String
+getCurrentLabel v = getLastLabel $ reverse v
+
 transAddOp :: AddOp -> Result
 transAddOp x = case x of
   Plus -> Success "add" (OperatorContext "+")
