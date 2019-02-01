@@ -17,9 +17,10 @@ data Context
     | FuncContext {retType :: String, arguments :: [String]}
     | ArgContext {argType :: String, argName :: String}
     | BlockContext {vars :: [Variable]}
-    | StmtContext {vars :: [Variable]}
+    | StmtContext {vars :: [Variable], number :: Integer}
     | ExpContext {expType :: String, expVar :: String, usedVars :: [Variable]}
     | OperatorContext {original :: String}
+    | ErrorContext {stmtNumber :: Integer, function :: String}
   deriving (Eq, Ord, Show, Read)
 data Result 
     = Success {line :: String, context :: Context}

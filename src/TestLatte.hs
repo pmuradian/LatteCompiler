@@ -11,11 +11,12 @@ import System.Process
 
 import LexLatte
 import ParLatte
--- import SkelLatte
 import PrintLatte
 import AbsLatte
 import CompilerBackend
--- import CompilerFrontend
+import Data.String.Utils
+import Data.List.Split
+import Data.List
 
 
 
@@ -36,11 +37,24 @@ printError errMessage = do
 putStrV :: Verbosity -> String -> IO ()
 putStrV v s = when (v > 1) $ putStrLn s
 
+prepareInput :: String -> String
+prepareInput input = do
+    -- replace all strings with empty string
+    let indices = elemIndices '\"' input
+    case indices of 
+      [] -> input
+      x -> prepareInput (take (head x) input ++ drop (1 + (head $ tail x)) input)
+
+
+
 runFile :: (Print a, Show a) => Verbosity -> ParseFun a -> FilePath -> IO ()
 runFile v p f = do
   let path = takeDirectory f ++ "/"
   let name = takeBaseName f
   putStrLn "" >> readFile f >>= run v p path name
+
+compileOutput :: String -> String -> IO()
+compileOutput path name = do
   -- for macOS path to LLVM
   let llvm_as = "/usr/local/opt/llvm/bin/llvm-as -o "
   let llvm_link = "/usr/local/opt/llvm/bin/llvm-link -o "
@@ -66,8 +80,10 @@ run v p path name s = let ts = myLLexer s in case p ts of
                               let result = availableFunctions ++ l
                               putStrLn "OK\n"
                               writeFile (path ++ name ++ ".ll") result
+                              compileOutput path name
                             Error l c -> do
-                              putStrLn ("ERROR\n" ++ l)
+                              putStrLn (replace (function c) "$" (replace " " "" (prepareInput s)))
+                              -- putStrLn ("ERROR\n" ++ l ++ "error in statement " ++ show (stmtNumber c) ++ function c)
                               exitSuccess
 
 

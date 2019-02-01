@@ -130,6 +130,7 @@ transProgram x = case x of
 getContextVars :: Result -> [Variable]
 getContextVars r = case context r of
   None -> []
+  ErrorContext {} -> []
   StmtContext {} -> vars $ context r
   ExpContext {} -> usedVars $ context r
 
@@ -138,9 +139,9 @@ compileProgram p = case p of
   Program topdefs -> do
     let functions = (map transFunc topdefs) ++ getAvailableFunctions
     if length (filter (\x -> name x == "main") functions) == 0 then
-      Error "missing function main()" None
+      Error "missing function main()" (ErrorContext 0 "intmain")
     else do
-      let initialResult = Success "" (StmtContext [])
+      let initialResult = Success "" (StmtContext [] 0)
       let folded = foldl (\a b -> accumulate a (transTopDef (functions ++ (getContextVars a)) b)) initialResult topdefs
       case folded of
         Error l c -> Error l c
@@ -192,6 +193,8 @@ transTopDef v x = case x of
     let retVar = if line ftype == "void" then [] else [createVariable (line ftype) "1" 1]
     let variables = map (\x -> createArgumentVariable (argType (fst x)) ((argName . fst) x) (show (snd x))) argumentVars
 
+    let funcInitials = getOriginalType (line ftype) ++ fName
+
     let checkedArguments = foldl (\a b -> accumulateArgs a b) initial variables
     case fst checkedArguments of
       EmptyVar -> do
@@ -203,10 +206,10 @@ transTopDef v x = case x of
       
         let blockCounter = [createBlockCounter]
       
-        let blockResult = transBlock block (blockCounter ++ initialVariables ++ retVar ++ variables) 0
+        let blockResult = transBlock block (blockCounter ++ initialVariables ++ retVar ++ variables) 0 0
       
         case blockResult of 
-          Error l c -> Error l c
+          Error l c -> Error l (ErrorContext (stmtNumber c) funcInitials)
           Success l c -> do
           
             let hasReturnStatement = length (filter (\x -> varType x == "ret") (vars c))
@@ -218,9 +221,9 @@ transTopDef v x = case x of
                 let allocAndStoreArguments = "\n" ++ concatWithSeparator allocArguments "\n" ++ "\n" ++ concatWithSeparator storeArguments "\n"
                 let returnLine = "\nbr label %return\nreturn:" ++ "\nret void"
                 let result = createFunctionDefinition (line ftype) fName argumentsLine (allocAndStoreArguments ++ blockLine) returnLine
-                Success result (StmtContext constantStrings)
+                Success result (StmtContext constantStrings (number (context blockResult)))
               other -> case hasReturnStatement of
-                0 -> Error ("Missing return statement in function " ++ fName) None
+                0 -> Error ("Missing return statement in function " ++ fName) (ErrorContext (number (context blockResult)) funcInitials)
                 other -> do
                   let blockLine = line blockResult
                   let constantStrings = filter (\x -> varType x == "i8") (vars $ context blockResult)
@@ -230,8 +233,8 @@ transTopDef v x = case x of
                   let loadReturnVar = finalVar ++ " = load " ++ line ftype ++ ", " ++ line ftype ++ "* %1\n"
                   let returnLine = "\nbr label %return\nreturn:\n" ++ loadReturnVar ++ "\nret " ++ line ftype ++ " " ++ finalVar
                   let result = createFunctionDefinition (line ftype) fName argumentsLine (allocAndStoreArguments ++ blockLine) returnLine
-                  Success result (StmtContext constantStrings)
-      other -> Error ("Duplicate definition of " ++ name other ++ " in function " ++ fName) None
+                  Success result (StmtContext constantStrings (number (context blockResult)))
+      other -> Error ("Duplicate definition of " ++ name other ++ " in function " ++ fName) (ErrorContext 0 funcInitials)
 
 transArg :: Arg -> Result
 transArg x = case x of
@@ -240,19 +243,20 @@ transArg x = case x of
     let id = transIdent ident
     let context = ArgContext (line t) (line id)
     Success (line t ++ " %" ++ line id) (ArgContext (line t) (line id))
-transBlock :: Block -> [Variable] -> Integer -> Result
-transBlock x v l = case x of
+transBlock :: Block -> [Variable] -> Integer -> Integer -> Result
+transBlock x v l lc = case x of
   Block stmts -> do
     let newVars = findAndIncrementBlockCounter v
     let currentBlock = last $ prevBlocks (getBlockCounter newVars)
-    let st = translateStatements stmts newVars currentBlock
+    let st = translateStatements stmts newVars currentBlock lc
     let statements = fst st
     case statements of
       [Error l c] -> Error l c
       _ -> do
         let a = concatWithSeparator (map line statements) "\n"
         let retVars = findAndDecrementBlockCounter $ snd st
-        Success ("\n" ++ a ++ "\n") (BlockContext retVars)
+        let stmtNumber = if statements == [] then lc else number (context (last statements))
+        Success ("\n" ++ a ++ "\n") (StmtContext retVars stmtNumber)
 
 
 accumulateArgs :: (Variable, [Variable]) -> Variable -> (Variable, [Variable])
@@ -261,19 +265,20 @@ accumulateArgs v a = case checkDuplicate a (snd v) of
   other -> (a, [])
 
 
-translateStatements :: [Stmt] -> [Variable] -> Integer -> ([Result], [Variable])
-translateStatements (x:xs) v l = do
-  let result = transStmt x v l
+translateStatements :: [Stmt] -> [Variable] -> Integer -> Integer -> ([Result], [Variable])
+translateStatements (x:xs) v l lc = do
+  let result = transStmt x v l lc
   case result of 
     Error line c -> ([Error line c], v)
     Success line c -> do
       let updatedVars = (vars . context) result
-      let res = translateStatements xs updatedVars l
+      let statementNumber = (number . context) result
+      let res = translateStatements xs updatedVars l statementNumber
       let f = fst res
       case f of
         [Error a b] -> ([Error a b], updatedVars)
         other -> (result : f, snd res)
-translateStatements [] v l = ([], v)
+translateStatements [] v l lc = ([], v)
 
 translateExpressions :: [Expr] -> [Variable] -> Integer -> ([Result], [Variable])
 translateExpressions (x:xs) v l = do
@@ -290,14 +295,17 @@ translateExpressions [] v l = ([], v)
 accumulate :: Result -> Result -> Result
 accumulate r1 r2 = case context r2 of
   ExpContext _ _ v -> case r1 of
-    Error ln c -> Error (line r1) None
-    other -> Success (line r1 ++ "\n" ++ line r2) (StmtContext v)
-  StmtContext v -> case r1 of
-    Error ln c -> Error (line r1) None
-    other -> Success (line r1 ++ "\n" ++ line r2) (StmtContext v)
+    Error ln c -> Error (line r1) c
+    other -> Success (line r1 ++ "\n" ++ line r2) (StmtContext v (number $ context r1))
+  StmtContext v lc -> case r1 of
+    Error ln c -> Error (line r1) c
+    other -> Success (line r1 ++ "\n" ++ line r2) (StmtContext v lc)
+  ErrorContext lc f -> case r1 of
+    Error lnn cc -> Error lnn cc
+    other -> Error (line r2 ++ "\n") (context r2)
   None -> case r1 of
-    Error ln c -> Error (line r1 ++ "\n" ++ line r2) None
-    other -> Error (line r2) None
+    Error lnn cc -> Error lnn cc
+    other -> Error (line r2 ++ "\n") (ErrorContext (number $ context r1) "")
 
 isBlockStatement :: Stmt -> Bool
 isBlockStatement stmt = case stmt of
@@ -307,18 +315,18 @@ isBlockStatement stmt = case stmt of
 createRetVar :: Variable
 createRetVar = Variable "ret" "ret" "ret" False 1 False True
 
-transStmt :: Stmt -> [Variable] -> Integer -> Result
-transStmt x v l = case x of
-  Empty -> Success "" (StmtContext v)
-  BStmt block -> transBlock block v l
+transStmt :: Stmt -> [Variable] -> Integer -> Integer -> Result
+transStmt x v l lc = case x of
+  Empty -> Success "" (StmtContext v (lc + 1))
+  BStmt block -> transBlock block v l lc
   Decl type_ items -> do
     let tp = line $ transType type_
-    let initialResult = Success "" (StmtContext v)
+    let initialResult = Success "" (StmtContext v (lc + 1))
     foldl (\a b -> accumulate a (transItem (getContextVars a) l tp b)) initialResult items
   Ass ident expr -> do
     let e = transExpr expr v l
     case e of 
-      Error ln c -> Error ln c
+      Error ln c -> Error ln (ErrorContext (1 + lc) "")
       Success ln c -> do
         let e_ctx = context e
         let i = transIdent ident
@@ -326,64 +334,63 @@ transStmt x v l = case x of
         let varName = expVar i_ctx
         let declaredVar = getDeclaredVariable varName v
         case declaredVar of
-          EmptyVar -> Error ("variable " ++ line i ++ " not declared") None
+          EmptyVar -> Error ("variable " ++ line i ++ " not declared") (ErrorContext (1 + lc) "")
           _ -> do
             let vType = getType v (alias declaredVar)
             if vType == expType e_ctx then do
               let result = line e ++ "\nstore " ++ expType e_ctx ++ " " ++ expVar e_ctx ++ ", " ++ vType ++ "* %" ++ alias declaredVar
               let newVars = usedVars e_ctx
-              Success result (StmtContext newVars)
-            else Error ("expression of type " ++ getOriginalType (expType e_ctx) ++ " cannot be assigned to " ++ getOriginalType vType) None
+              Success result (StmtContext newVars (lc + 1))
+            else Error ("expression of type " ++ getOriginalType (expType e_ctx) ++ " cannot be assigned to " ++ getOriginalType vType) (ErrorContext (1 + lc) "")
   Incr ident -> do 
     let statement = translateUnaryStatement ident v l
     case statement of
-      Error ln c -> Error ln c
-      Success ln c -> Success (replace "_op_" "add" ln) c
+      Error ln c -> Error ln (ErrorContext (1 + lc) "")
+      Success ln c -> Success (replace "_op_" "add" ln) (StmtContext (vars c) (1 + lc))
   Decr ident -> do
     let statement = translateUnaryStatement ident v l
     case statement of
-      Error ln c -> Error ln c
-      Success ln c -> Success (replace "_op_" "sub" ln) c
+      Error ln c -> Error ln (ErrorContext (1 + lc) "")
+      Success ln c -> Success (replace "_op_" "sub" ln) (StmtContext (vars c) (1 + lc))
   Ret expr -> do 
     let expression = transExpr expr v l
     case expression of 
-      Error ln c -> Error ln c
+      Error ln c -> Error ln (ErrorContext (1 + lc) "")
       Success ln c -> do
         let currentFunction = getCurrentFunction $ usedVars c
         let currentFuncType = head $ getFuncType currentFunction
         if currentFuncType /= expType c then
-          Error ("function " ++ name currentFunction ++ " must return a value of type " ++ getOriginalType currentFuncType) None
+          Error ("function " ++ name currentFunction ++ " must return a value of type " ++ getOriginalType currentFuncType) (ErrorContext (1 + lc) "")
         else do
           let storeRetVar = "store " ++ (expType . context) expression ++ " " ++ (expVar . context) expression ++ ", " ++ (expType . context) expression ++ "* %1"
           let retVar = createRetVar
-          Success ("\n" ++ ln ++ "\n" ++ storeRetVar ++ "\nbr label %return\n") (StmtContext (usedVars c ++ [retVar]))
+          Success ("\n" ++ ln ++ "\n" ++ storeRetVar ++ "\nbr label %return\n") (StmtContext (usedVars c ++ [retVar]) (1 + lc))
   VRet -> do
     let currentFunction = getCurrentFunction v
     let currentFuncType = head $ getFuncType currentFunction
     case currentFuncType of
-      "void" -> Success "br label %return\n" (StmtContext (v ++ [createRetVar]))
-      other -> Error ("function " ++ name currentFunction ++ " must return a value of type " ++ getOriginalType currentFuncType) None
+      "void" -> Success "br label %return\n" (StmtContext (v ++ [createRetVar]) (1 + lc))
+      other -> Error ("function " ++ name currentFunction ++ " must return a value of type " ++ getOriginalType currentFuncType) (ErrorContext (1 + lc) "")
   Cond expr stmt -> do
     let expression = transExpr expr v l
     case expression of 
-      Error ln c -> Error ln c
-      Success ln c -> do
+      Error ln ctx -> Error ln (ErrorContext (1 + lc) "")
+      Success ln ctx -> do
         let newVars = usedVars $ context expression
         let breakVar = nextVarName newVars
         let breakVarNum = nextVarNum newVars
 
-        -- case of "if (false) {}" statement
-        case expVar c of 
-          "0" -> Success "\n" (StmtContext (usedVars c))
-          other -> do
-            -- increment level and blockCount if stmt is not a block statement
-            let level = if isBlockStatement stmt then l else last $ prevBlocks (getBlockCounter newVars)
-            let updatedVars = if isBlockStatement stmt then newVars else findAndIncrementBlockCounter newVars
-
-            let statement = transStmt stmt (updatedVars ++ [createLabel breakVar]) level
-            case statement of 
-              Error ln c -> Error ln c
-              Success ln c -> do
+        -- increment level and blockCount if stmt is not a block statement
+        let level = if isBlockStatement stmt then l else last $ prevBlocks (getBlockCounter newVars)
+        let updatedVars = if isBlockStatement stmt then newVars else findAndIncrementBlockCounter newVars
+        let statement = transStmt stmt (updatedVars ++ [createLabel breakVar]) level (1 + lc)
+        case statement of 
+          Error ln c -> Error ln c
+          Success ln c ->
+                    -- case of "if (false) {}" statement
+            case expVar ctx of 
+              "0" -> Success "\n" (StmtContext (usedVars ctx) (number c))
+              other -> do
                 let tempRetVars = filter (\x -> varType x /= "ret") (vars (context statement))
                 let breakVar2 = nextVarName tempRetVars
                 let breakVar2Num = nextVarNum tempRetVars
@@ -392,11 +399,11 @@ transStmt x v l = case x of
                 
                 let expLine = (expVar . context) expression
                 let break = "\nbr i1 " ++ expLine ++ ", label " ++ breakVar ++ ", label " ++ breakVar2 ++ "\n;<label>:" ++ breakVarNum
-                Success (line expression ++ break ++ line statement ++ "\n;<label>:" ++ breakVar2Num) (StmtContext (retVars ++ [createLabel breakVar2]))
+                Success (line expression ++ break ++ line statement ++ "\n;<label>:" ++ breakVar2Num) (StmtContext (retVars ++ [createLabel breakVar2]) (number c))
   CondElse expr stmt1 stmt2 -> do
     let expression = transExpr expr v l
     case expression of 
-      Error ln c -> Error ln c
+      Error ln c -> Error ln (ErrorContext (1 + lc) "")
       Success ln c -> do
         let newVars = (usedVars . context) expression
         let breakVar = nextVarName newVars
@@ -405,11 +412,12 @@ transStmt x v l = case x of
         let level = if isBlockStatement stmt1 then l else last $ prevBlocks (getBlockCounter newVars)
         let updatedVars = if isBlockStatement stmt1 then newVars else findAndIncrementBlockCounter newVars
 
-        let statement1 = transStmt stmt1 (updatedVars ++ [createLabel breakVar]) level
+        let statement1 = transStmt stmt1 (updatedVars ++ [createLabel breakVar]) level (1 + lc)
         case statement1 of 
           Error ln c -> Error ln c
           Success ln c -> do
             let stmt1Vars = vars (context statement1)
+            let stmtCnt = number (context statement1)
 
             let decrementedUpdatedVars = if isBlockStatement stmt1 then stmt1Vars else findAndDecrementBlockCounter stmt1Vars
             let nextLevel = if isBlockStatement stmt2 then level else last $ prevBlocks (getBlockCounter stmt1Vars)
@@ -417,11 +425,12 @@ transStmt x v l = case x of
 
             let breakVar2 = nextVarName tempUpdatedVars
             let breakVar2Num = nextVarNum tempUpdatedVars
-            let statement2 = transStmt stmt2 (tempUpdatedVars ++ [createLabel breakVar2]) nextLevel
+            let statement2 = transStmt stmt2 (tempUpdatedVars ++ [createLabel breakVar2]) nextLevel (1 + stmtCnt)
             case statement2 of 
               Error ln c -> Error ln c
               Success ln c -> do
                 let tempRetVars = vars (context statement2)
+                let tmpStmtCnt = number (context statement2)
 
                 let retVars = if isBlockStatement stmt2 then tempRetVars else findAndDecrementBlockCounter tempRetVars
 
@@ -433,44 +442,43 @@ transStmt x v l = case x of
                 let finalBreak = "br label " ++ breakVar3
                 let finalBreakNum = nextVarNum retVars
                 Success (line expression ++ break ++ "\n" ++ stmt1Line ++ finalBreak ++ "\n;<label>:" ++ breakVar2Num ++ "\n" ++ stmt2Line ++ finalBreak ++ "\n;<label>:" ++ finalBreakNum ++ "\n") 
-                  (StmtContext (retVars ++ [createLabel breakVar3]))
+                  (StmtContext (retVars ++ [createLabel breakVar3]) tmpStmtCnt)
   While expr stmt -> do
     let whileLabelVar = nextVarName v
     let whileLabel = "br label " ++ whileLabelVar ++ "\n;<label>:" ++ nextVarNum v ++ "\n"
 
     let expression = transExpr expr (v ++ [createLabel whileLabelVar]) l
     case expression of 
-      Error ln c -> Error ln c
-      Success ln c ->
-        case expVar c of 
-          "0" -> Success "" c
-          other -> do
-            let expVars = usedVars (context expression)
-            let stmtLabelVar = nextVarName expVars
-            let stmtLabel = ";<label>:" ++ nextVarNum expVars ++ "\n"
-
-            let level = if isBlockStatement stmt then l else last $ prevBlocks (getBlockCounter expVars)
-            let bvpuct = if isBlockStatement stmt then expVars else findAndIncrementBlockCounter expVars
-
-            let statement = transStmt stmt (bvpuct ++ [createLabel stmtLabelVar]) level
-            case statement of
-              Error ln c -> Error ln c
-              Success ln c -> do
+      Error ln ctx -> Error ln (ErrorContext (1 + lc) "")
+      Success ln ctx -> do
+        let expVars = usedVars (context expression)
+        let stmtLabelVar = nextVarName expVars
+        let stmtLabel = ";<label>:" ++ nextVarNum expVars ++ "\n"
+        let level = if isBlockStatement stmt then l else last $ prevBlocks (getBlockCounter expVars)
+        let bvpuct = if isBlockStatement stmt then expVars else findAndIncrementBlockCounter expVars
+        let statement = transStmt stmt (bvpuct ++ [createLabel stmtLabelVar]) level (1 + lc)
+        case statement of
+          Error ln c -> Error ln c
+          Success ln c ->
+            case expVar ctx of 
+              "0" -> Success "" ctx
+              other -> do
                 let stmtVars = vars (context statement)
+                let stmtNumber = number (context statement)
                 let continuationVar = nextVarName stmtVars
-              
+
                 let grtuct = if isBlockStatement stmt then stmtVars else findAndDecrementBlockCounter stmtVars
-              
+
                 let continuationLabel = ";<label>:" ++ nextVarNum grtuct ++ "\n"
                 let endStmtBreak = "\nbr label " ++ whileLabelVar ++ "\n"
                 let breakLine = "br i1 " ++ expVar (context expression) ++ ", label " ++ stmtLabelVar ++ ", label " ++ continuationVar ++ "\n"
                 let returnLine = whileLabel ++ line expression ++ "\n" ++ breakLine ++ stmtLabel ++ line statement ++ endStmtBreak ++ continuationLabel
-                Success returnLine (StmtContext (grtuct ++ [createLabel continuationVar]))
+                Success returnLine (StmtContext (grtuct ++ [createLabel continuationVar]) stmtNumber)
   SExp expr -> do
     let expression = transExpr expr v l
     case expression of
-      Error ln c -> Error ln c
-      Success ln c -> Success ln (StmtContext (usedVars c))
+      Error ln c -> Error ln (ErrorContext (1 + lc) "")
+      Success ln c -> Success ln (StmtContext (usedVars c) (1 + lc))
 
 nameVariable :: String -> [Variable] -> String
 nameVariable s vars = case last $ prevBlocks (getBlockCounter vars) of
@@ -680,7 +688,7 @@ translateUnaryStatement ident v l = do
           let increment = incVar ++ " = _op_ i32 " ++ var ++ ", 1\n"
           let res = "store i32 " ++ incVar ++ ", i32* %" ++ alias declaredVar
           let retVars = newVars ++ [createVariable "i32" incVar l]
-          Success (load ++ increment ++ res) (StmtContext retVars)
+          Success (load ++ increment ++ res) (StmtContext retVars 0)
         _-> Error ("unary operators cannot be applied to argument of type " ++ getOriginalType tp) None
 
 translateBinaryExpression :: Expr -> Expr -> [Variable] -> Integer -> Result
