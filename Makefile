@@ -15,8 +15,8 @@ clean:
 distclean: clean
 	-rm -f src/DocLatte.* src/LexLatte.* src/ParLatte.* src/LayoutLatte.* src/SkelLatte.* src/PrintLatte.* src/TestLatte.* src/AbsLatte.* src/TestLatte src/ErrM.* src/SharedString.* src/ComposOp.* src/latte.dtd src/XMLLatte.* Makefile*
 
-test18: compile
-	./latc_llvm ./tests/bad/core018.lat
+testSingle: compile
+	./latc_llvm ./tests/good/test_string.lat
 
 testGood: compile
 	./latc_llvm ./tests/good/core001.lat

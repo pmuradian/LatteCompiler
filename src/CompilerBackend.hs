@@ -223,7 +223,7 @@ transTopDef v x = case x of
                 let result = createFunctionDefinition (line ftype) fName argumentsLine (allocAndStoreArguments ++ blockLine) returnLine
                 Success result (StmtContext constantStrings (number (context blockResult)))
               other -> case hasReturnStatement of
-                0 -> Error ("Missing return statement in function " ++ fName) (ErrorContext (number (context blockResult)) funcInitials)
+                0 -> Error ("Missing or unreachable return statement in function " ++ fName) (ErrorContext (number (context blockResult)) funcInitials)
                 other -> do
                   let blockLine = line blockResult
                   let constantStrings = filter (\x -> varType x == "i8") (vars $ context blockResult)
@@ -341,7 +341,7 @@ transStmt x v l lc = case x of
               let result = line e ++ "\nstore " ++ expType e_ctx ++ " " ++ expVar e_ctx ++ ", " ++ vType ++ "* %" ++ alias declaredVar
               let newVars = usedVars e_ctx
               Success result (StmtContext newVars (lc + 1))
-            else Error ("expression of type " ++ getOriginalType (expType e_ctx) ++ " cannot be assigned to " ++ getOriginalType vType) (ErrorContext (1 + lc) "")
+            else Error ("Expression of type " ++ getOriginalType (expType e_ctx) ++ " cannot be assigned to " ++ getOriginalType vType) (ErrorContext (1 + lc) "")
   Incr ident -> do 
     let statement = translateUnaryStatement ident v l
     case statement of
@@ -360,7 +360,7 @@ transStmt x v l lc = case x of
         let currentFunction = getCurrentFunction $ usedVars c
         let currentFuncType = head $ getFuncType currentFunction
         if currentFuncType /= expType c then
-          Error ("function " ++ name currentFunction ++ " must return a value of type " ++ getOriginalType currentFuncType) (ErrorContext (1 + lc) "")
+          Error ("Function " ++ name currentFunction ++ " must return a value of type " ++ getOriginalType currentFuncType) (ErrorContext (1 + lc) "")
         else do
           let storeRetVar = "store " ++ (expType . context) expression ++ " " ++ (expVar . context) expression ++ ", " ++ (expType . context) expression ++ "* %1"
           let retVar = createRetVar
@@ -370,7 +370,7 @@ transStmt x v l lc = case x of
     let currentFuncType = head $ getFuncType currentFunction
     case currentFuncType of
       "void" -> Success "br label %return\n" (StmtContext (v ++ [createRetVar]) (1 + lc))
-      other -> Error ("function " ++ name currentFunction ++ " must return a value of type " ++ getOriginalType currentFuncType) (ErrorContext (1 + lc) "")
+      other -> Error ("Function " ++ name currentFunction ++ " must return a value of type " ++ getOriginalType currentFuncType) (ErrorContext (1 + lc) "")
   Cond expr stmt -> do
     let expression = transExpr expr v l
     case expression of 
@@ -501,7 +501,7 @@ transItem v l t x = case x of
     let declaredVar = createDeclaredVariableWithAlias t id newName l
     case checkDuplicate declaredVar v of
       EmptyVar -> Success (getInitLine t newName) (ExpContext t id (v ++ [createDeclaredVariableWithAlias t id newName l]))
-      other -> Error ("duplicate definition of variable " ++ newName) None
+      other -> Error ("Duplicate definition of variable " ++ newName) None
   Init ident expr -> do 
     let res = transExpr expr v l
     case res of
@@ -518,9 +518,9 @@ transItem v l t x = case x of
                 let def = "%" ++ newName ++ " = alloca " ++ expType ctx
                 let init = "store " ++ expType ctx ++ " " ++ expVar ctx ++ ", " ++ t ++"* %" ++ newName
                 Success (line res ++ "\n" ++ def ++ "\n" ++ init) (ExpContext (expType ctx) newName (vars ++ [declaredVar]))
-              else Error ("cannot assign " ++ getOriginalType (expType c) ++ " to variable of type " ++ getOriginalType t) None
-            other -> Error ("duplicate definition of variable " ++ newName) None
-        else Error ("expression of type " ++ getOriginalType (expType c) ++ " cannot be assigned to " ++ getOriginalType t) None
+              else Error ("Cannot assign " ++ getOriginalType (expType c) ++ " to variable of type " ++ getOriginalType t) None
+            other -> Error ("Duplicate definition of variable " ++ newName) None
+        else Error ("Expression of type " ++ getOriginalType (expType c) ++ " cannot be assigned to " ++ getOriginalType t) None
 transType :: Type -> Result
 transType x = case x of
   Int -> Success "i32" None
@@ -609,7 +609,7 @@ transExpr x v level = case x of
             let negVar = nextVarName expVars
             let negative = negVar ++ " = mul i32 -1, " ++ expressionVar
             Success (line expression ++ "\n" ++ negative) (ExpContext "i32" negVar (expVars ++ [createVariable "i32" negVar level]))
-          other -> Error ("cannot negate variable of type " ++ getOriginalType other) None
+          other -> Error ("Cannot negate variable of type " ++ getOriginalType other) None
   Not expr -> do 
     let expression = transExpr expr v level
     case expression of 
@@ -619,7 +619,7 @@ transExpr x v level = case x of
         let retLine = var ++ " = xor i1 " ++ expVar ctx ++ ", 1\n"
         case expType ctx of
           "i1" -> Success (line expression ++ "\n" ++ retLine) (ExpContext "i1" var (usedVars ctx ++ [createVariable "i1" var level]))
-          other -> Error ("logical negation cannot be applied to variable of type " ++ getOriginalType other) None
+          other -> Error ("Logical negation cannot be applied to variable of type " ++ getOriginalType other) None
   EMul expr1 mulop expr2 -> do
     let translated = translateBinaryExpression expr1 expr2 v level
     case translated of 
@@ -657,8 +657,8 @@ transExpr x v level = case x of
                   let ctx = ExpContext "i1" var (vars ++ [newVar])
                   let res = var ++ " = icmp " ++ line o ++ " " ++ expType (context l) ++ " " ++ lExpVar ++ ", " ++ expVar (context r)
                   Success (line l ++ "\n" ++ line r ++ "\n" ++ res) ctx
-                tp -> Error ("relational operator " ++ original (context o) ++ " cannot be applied to type " ++ getOriginalType tp) None
-            else Error ("type mismatch in relational operator " ++ original (context o)) None
+                tp -> Error ("Relational operator " ++ original (context o) ++ " cannot be applied to type " ++ getOriginalType tp) None
+            else Error ("Type mismatch in relational operator " ++ original (context o)) None
   EAnd expr1 expr2 -> do
     let translated = translateBooleanExpression expr1 expr2 "and" v level
     case translated of 
@@ -689,7 +689,7 @@ translateUnaryStatement ident v l = do
           let res = "store i32 " ++ incVar ++ ", i32* %" ++ alias declaredVar
           let retVars = newVars ++ [createVariable "i32" incVar l]
           Success (load ++ increment ++ res) (StmtContext retVars 0)
-        _-> Error ("unary operators cannot be applied to argument of type " ++ getOriginalType tp) None
+        _-> Error ("Unary operators cannot be applied to argument of type " ++ getOriginalType tp) None
 
 translateBinaryExpression :: Expr -> Expr -> [Variable] -> Integer -> Result
 translateBinaryExpression expr1 expr2 v level = do
@@ -719,8 +719,8 @@ translateBinaryExpression expr1 expr2 v level = do
                 let retVars = rvars ++ [createVariable (varType lvar) opVarName level]
                 let ctx = ExpContext (varType lvar) opVarName retVars
                 Success (line l ++ "\n" ++ line r ++ "\n" ++ res ++ "\n") ctx
-              _ -> Error ("binary operator _op_ cannot be applied to operands of type " ++ getOriginalType (varType lvar)) None
-          else Error "operands of binary operator _op_ have different types" None
+              _ -> Error ("Binary operator _op_ cannot be applied to operands of type " ++ getOriginalType (varType lvar)) None
+          else Error "Operands of binary operator _op_ have different types" None
 
 translateBooleanExpression :: Expr -> Expr -> String -> [Variable] -> Integer -> Result
 translateBooleanExpression expr1 expr2 op v level = do

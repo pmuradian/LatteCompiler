@@ -37,6 +37,9 @@ printError errMessage = do
 putStrV :: Verbosity -> String -> IO ()
 putStrV v s = when (v > 1) $ putStrLn s
 
+modifyInput :: String -> String -> String
+modifyInput s f = replace "while" "while;"(replace "else" "else;" (replace "if" "if;" (replace f "$" (replace " " "" (prepareInput s)))))
+
 prepareInput :: String -> String
 prepareInput input = do
     -- replace all strings with empty string
@@ -82,8 +85,22 @@ run v p path name s = let ts = myLLexer s in case p ts of
                               writeFile (path ++ name ++ ".ll") result
                               compileOutput path name
                             Error l c -> do
-                              putStrLn (replace (function c) "$" (replace " " "" (prepareInput s)))
-                              -- putStrLn ("ERROR\n" ++ l ++ "error in statement " ++ show (stmtNumber c) ++ function c)
+                              let modifiedInput = modifyInput s (function c)
+                              case elemIndex '$' modifiedInput of
+                                Just x ->
+                                  case fromIntegral (stmtNumber c) of 
+                                    0 -> putStrLn ("ERROR\n" ++ l ++ "error in line: " ++ show x)
+                                    num -> do
+                                      let bvpu = drop x modifiedInput
+                                      let offset = length (take x modifiedInput)
+                                      let indice = elemIndices ';' bvpu
+                                      let index = head (drop (num - 1) indice)
+                                      let bv = take (offset + index) modifiedInput
+                                      let len = length (splitOn "\n" bv)
+                                      let final = last (take len (splitOn "\n" s))
+                                      putStrLn ("ERROR\n" ++ l ++ "error in line: " ++ show len ++ ", in: " ++ final)
+                                      exitSuccess
+                                _ -> exitSuccess
                               exitSuccess
 
 
