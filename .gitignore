@@ -2,3 +2,5 @@ src/*.hi
 src/*.o
 tests/good/*.ll
 tests/good/*bc
+tests/bad/*.ll
+tests/bad/*bc
