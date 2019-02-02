@@ -8,6 +8,7 @@ module AbsLatte where
 data Variable = Variable {varType :: String, name :: String, alias :: String, isFunc :: Bool, level :: Integer, isUsed :: Bool, isGenerated :: Bool}
                 | BlockCounter {varType :: String, name :: String, alias :: String, isFunc :: Bool, level :: Integer, isUsed :: Bool, isGenerated :: Bool, count :: Integer, prevBlocks :: [Integer]}
                 | FuncVariable {varType :: String, name :: String, alias :: String, isFunc :: Bool, level :: Integer, isUsed :: Bool, isGenerated :: Bool, isCurrent :: Bool}
+                | ReturnVariable {varType :: String, name :: String, alias :: String, isFunc :: Bool, level :: Integer, isUsed :: Bool, isGenerated :: Bool, isReachable :: Bool}
                 | EmptyVar
   deriving (Eq, Ord, Show, Read)
 

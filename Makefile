@@ -10,13 +10,13 @@ compile:
 	ghc --make -isrc ./src/TestLatte.hs -o latc_llvm
 
 clean:
-	-rm -f ./src/*.log ./src/*.aux ./src/*.hi ./src/*.o ./src/*.dvi ./src/*.bak
+	-rm -f .hs latc_llvm ./src/*.log ./src/*.aux ./src/*.hi ./src/*.o ./src/*.dvi ./src/*.bak ./tests/good/*.ll ./tests/good/*.bc 
 
 distclean: clean
 	-rm -f src/DocLatte.* src/LexLatte.* src/ParLatte.* src/LayoutLatte.* src/SkelLatte.* src/PrintLatte.* src/TestLatte.* src/AbsLatte.* src/TestLatte src/ErrM.* src/SharedString.* src/ComposOp.* src/latte.dtd src/XMLLatte.* Makefile*
 
 testSingle: compile
-	./latc_llvm ./tests/good/test_string.lat
+	./latc_llvm ./tests/good/core019.lat
 
 testGood: compile
 	./latc_llvm ./tests/good/core001.lat

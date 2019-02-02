@@ -89,7 +89,9 @@ run v p path name s = let ts = myLLexer s in case p ts of
                               case elemIndex '$' modifiedInput of
                                 Just x ->
                                   case fromIntegral (stmtNumber c) of 
-                                    0 -> putStrLn ("ERROR\n" ++ l ++ "error in line: " ++ show x)
+                                    0 -> do
+                                      let bvpu = splitOn "\n" (take x modifiedInput)
+                                      putStrLn ("ERROR\n" ++ l ++ "error in line: " ++ (show $ length bvpu))
                                     num -> do
                                       let bvpu = drop x modifiedInput
                                       let offset = length (take x modifiedInput)
@@ -100,7 +102,7 @@ run v p path name s = let ts = myLLexer s in case p ts of
                                       let final = last (take len (splitOn "\n" s))
                                       putStrLn ("ERROR\n" ++ l ++ "error in line: " ++ show len ++ ", in: " ++ final)
                                       exitSuccess
-                                _ -> exitSuccess
+                                _ -> putStrLn ("ERROR\n" ++ l)
                               exitSuccess
 
 
